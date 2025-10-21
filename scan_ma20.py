@@ -1,5 +1,6 @@
 """
 Scan SGX tickers on Yahoo (.SI) against MA20.
+Stocks whose last close price dropped below the MA20 by at least the threshold percentage will be shown in the output.
 
 Usage example:
 python scan_ma20.py --symbols CC3 G13 N2IU C6L F34 BS6 Z74 O39 --threshold 0.05
@@ -12,6 +13,8 @@ import time
 import urllib.request
 import urllib.error
 import gzip
+from tqdm import tqdm
+from collections import Counter
 
 YF_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1mo&includeAdjustedClose=true"
 YF_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols}"
@@ -108,19 +111,30 @@ def main():
     ap = argparse.ArgumentParser(description="Filter SGX stocks by latest/MA20 ratio using Yahoo Finance.")
     ap.add_argument("--symbols", nargs="+", required=True, help="SGX codes with/without .SI (e.g. CC3 G13 N2IU C6L)")
     ap.add_argument("--threshold", type=float, default=0.05,
-                    help="0.05 means +5%% above MA20 (ratio≥1.05). If ≥1.0, treated as ratio directly.")
+                    help="A threshold of 0.05 means −5% below MA20 (ratio ≤ 0.95).")
     ap.add_argument("--sleep", type=float, default=0.3, help="Seconds to sleep between requests.")
     ap.add_argument("--names", choices=["auto","search","none"], default="auto",
                     help="How to fetch names: 'auto' (try quote then fallback), 'search' (per symbol), or 'none'.")
     args = ap.parse_args()
 
-    ratio_threshold = 1.0 + args.threshold
+    ratio_threshold = 1.0 - args.threshold
 
-    symbols_si = [ensure_si(s) for s in args.symbols]
+    # Normalize symbols to .SI and uppercase, detect duplicates, and de-duplicate while preserving order
+    normalized_symbols = [ensure_si(s) for s in args.symbols]
+    counts = Counter(normalized_symbols)
+    duplicates = [f"{sym} (x{counts[sym]})" for sym in counts if counts[sym] > 1]
+    if duplicates:
+        print("[WARN] Duplicate stock codes detected (will be de-duplicated): " + ", ".join(duplicates))
+
+    # Unique list in original order
+    symbols_si = list(dict.fromkeys(normalized_symbols))
+
+    print("[INFO] Fetching scanning data...")
+
     name_map = get_name_map(symbols_si, args.names)
 
     results = []
-    for sym in symbols_si:
+    for sym in tqdm(symbols_si, desc="Scanning", unit="stock"):
         try:
             last20, latest = fetch_last_20_and_latest(sym)
             ma20 = mean(last20)
@@ -131,16 +145,19 @@ def main():
             print(f"[WARN] {sym}: {e}", file=sys.stderr)
         time.sleep(args.sleep)
 
-    filtered = [r for r in results if r.get("ratio", 0) >= ratio_threshold]
-    filtered.sort(key=lambda x: x["ratio"], reverse=True)
+    filtered = [r for r in results if r.get("ratio", 0) <= ratio_threshold]
+    filtered.sort(key=lambda x: x["ratio"])
+
+    # Print stats
+    print(f"\nProcessed {len(results)} valid stocks, {len(filtered)} passed filter (price dropped by at least {100*(1-ratio_threshold):.2f}%).\n")
 
     header = f"{'Code':<10} {'Name':<40} {'$MA20':>10} {'$Latest':>10} {'%Change':>8}"
-    print(header); print("-" * len(header))
     if not filtered:
-        print(f"(no matches with ratio >= {ratio_threshold:.4f})")
         return
+
+    print(header); print("-" * len(header))
     for r in filtered:
-        print(f"{r['code']:<10} {r['name'][:38]:<40} {r['ma20']:>10.4f} {r['latest']:>10.4f} {(r['ratio']-1.0):>8.4f}")
+        print(f"{r['code']:<10} {r['name'][:38]:<40} {r['ma20']:>10.4f} {r['latest']:>10.4f} {(100*(r['ratio']-1.0)):>8.2f}")
 
 if __name__ == "__main__":
     main()
