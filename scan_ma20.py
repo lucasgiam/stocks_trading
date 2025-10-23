@@ -3,7 +3,9 @@ Scan SGX tickers on Yahoo (.SI) against MA20.
 Stocks whose last close price dropped below the MA20 by at least the threshold percentage will be shown in the output.
 
 Usage example:
-python scan_ma20.py --symbols CC3 G13 N2IU C6L F34 BS6 Z74 O39 --threshold 0.05
+    python scan_ma20.py --symbols CC3 G13 N2IU C6L F34 BS6 Z74 O39 --threshold 0.05
+
+If --symbols is omitted, the script will use DEFAULT_SYMBOLS defined below, formatted like: [CC3 G13 N2IU C6L]
 """
 
 import argparse
@@ -16,11 +18,13 @@ import gzip
 from tqdm import tqdm
 from collections import Counter
 
+# ========== USER INPUT ==========
+DEFAULT_SYMBOLS = "[HTCD HBBD HCCD HBND HSHD HPCD HXXD HPAD HYDD D05 HSMD HMTD TDED O39 Z74 Z77 HJDD U11 HPPD K6S TADD S63 J36 Q0F TATD NIO C6L S68 F34 C38U H78 BN4 TPED TKKD TCPD A17U 9CI BS6 SO7 Y92 C07 U96 G13 IICD N2IU G07 5E2 U14 M44U C09 ME8U D01 AJBU EMI M04 T14 S58 J69U U06 V03 K71U TQ5 T82U S59 CJLU VC2 BUOU YF8 HMN E5H OV8 H02 C52 AIY A7RU EB5 C2PU S07 H15 U10 P8Z P7VU F17 NS8U 9A4U F99 CC3 8C8U TS0U BSL OYY BVA H22 JYEU CY6U A50 H13 AU8U Z25 NTDU AGS P40U SET F03 AP4 Q5T OU8 S41 ADN P15 O5RU G92 BEC W05 B61 J85 S61 558 S08 EH5 LJ3 T6I F9D CRPU P52 DCRU S20 STG U9E CHZ NC2 H07 RE4 QES E3B E28 BWM P9D O10 H30 AW9U B58 WJP C41 AWX V5Q 544 F83 T15 Q01 H18 8AZ S56 TSH P34 5JS M1GU QC7 U13 5TP 1D0 BHK F1E MZH BBW MV4 M01 5UF T24 5UX DHLU PCT 5IG ODBU B28 8U7U UD1U 5WJ S35 5GD Y03 MXNU 41O OXMU BN2 HQU NPW BDX S85 N02 5LY BTE JLB 5CF CMOU AWZ CLN TCU S3N 500 BTM 1MZ QNS ZKX KUO 5JK H12 5DD A30 DU4 G20 5VS ER0 BMGU 5WH J2T 5HV DM0 40T C33 HLS A04 X5N AWI Z59 XZL 5IC S7OU I07 BQM BQF BTOU BEW XJB L19 D03 42R 564 LVR M14 MR7 5ML RXS BTG T13 G0I A31 BLS T12 G50 5DP 579 C9Q 1L2 S23 L02 BPF F86 OAJ S19 5WA 1F2 Q0X PPC K75 WPC L38 S44 WKS BIP 1J5 5SO D5IU BTP BQD U77 N08 1J4 BCY 5MZ V7R 1E3 YYR YYY 41B Y35 NR7 O9E 42E BDR B69 40V 5SR URR 595 533 42L 566 RQ1 BNE ZB9 42C BKA BHU 5AE T41 B49 F13 5DM D8DU 546 BEZ S69 ZXY 42T C06 YK9 BBP 1D1 GEH 5WF KJ5 5G2 8K7 I49 T55 K29 M05 5DS C8R 1AZ 42W Y3D NEX 1Y1 A55 1B1 5I1 BKX 5UL 569 BEI S29 FQ7 53W S9B BIX 1F3 5EG LMS T43 C05 N01 AYN C76 9G2 1A1 O08 AWG 8YY I06 5PC 5GZ UIX 43A BFI L23 5TT N0Z 42F CHJ BDA R14 P8A 5HH 541 5F7 YYN 554 BTJ 596 DRX LS9 1R6 Y8E 1V3 C13 VIN BQC SGR 5NV BQN CIN 5PD 5AB CNE OTX E27 BXE NPL AVX 532 5OI A33 GRQ 43B FRQ BKW 540 BFU 5KI 1H8 43Q BDU P36 5NF S71 C04 594 AOF K03 MIJ 505 543 AAJ 5AU CTO 5GI 5SY BQP OTS AJ2 5AL 1D4 XHV BAZ 1B0 A52 BJZ BCV VI2 AWC BRD BTX 5RA BJV 5AI KUX TVV E6R 5BI BFT 43E 42N 40W 5G1 MF6 5WV 5VP 5EV N32 504 1D5 CEDU 5FW 5VC PRH 570 5PF H20 1B6 TWL BHD BLZ 49B 5EB BFK 1H2 5DO SEJ ENV 5EF AZA F10 5G9 41F 5HG 583 5TJ 584 5IF BKZ QS9 BCZ M15 SES QZG OMK P74 J03 9QX 581 40N WJ9 5F4 5QY 5EW 5RC XCF YYB 1H3 9I7 NHD GU5 Y06 M03 V3M V8Y AWV 5OX 1D3 5UA 5G4 BLR 580 BAI BLU 43F 5FX AWK 585 5DX BKK 5CR I11 41T 8A1 KUH M11 1F0 CYW 5OR 1F1 BAC V2Y 5RE BKV 42Z 9VW LYY BEH E9L AWM AYV Z4D BJD]"
+# ================================
+
 YF_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1mo&includeAdjustedClose=true"
 YF_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols}"
 YF_SEARCH_URL = "https://query2.finance.yahoo.com/v1/finance/search?q={symbol}&quotesCount=1"
-
-# --- NEW: dedicated chart URL for dividend events over a 1-year window ---
 YF_CHART_DIV_URL = (
     "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
     "?period1={p1}&period2={p2}&interval=1d&events=div&includeAdjustedClose=true"
@@ -144,9 +148,21 @@ def mean(vals):
 def is_watch_list_name(name: str) -> bool:
     return "- watch list" in (name or "").lower()
 
+def parse_symbols_string(s: str) -> list[str]:
+    """
+    Accepts a string like "[CC3 G13 N2IU C6L]" or "CC3 G13 N2IU C6L" and returns
+    ['CC3','G13','N2IU','C6L'].
+    """
+    if not s:
+        return []
+    s = s.strip()
+    if s.startswith("[") and s.endswith("]"):
+        s = s[1:-1]
+    return [tok for tok in s.split() if tok]
+
 def main():
     ap = argparse.ArgumentParser(description="Filter SGX stocks by latest/MA20 ratio using Yahoo Finance.")
-    ap.add_argument("--symbols", nargs="+", required=True, help="SGX codes with/without .SI (e.g. CC3 G13 N2IU C6L)")
+    ap.add_argument("--symbols", nargs="+", help="SGX codes with/without .SI (e.g. CC3 G13 N2IU C6L)")
     ap.add_argument("--threshold", type=float, default=0.05,
                     help="A threshold of 0.05 means −5% below MA20 (ratio ≤ 0.95).")
     ap.add_argument("--sleep", type=float, default=0.3, help="Seconds to sleep between requests.")
@@ -154,10 +170,16 @@ def main():
                     help="How to fetch names: 'auto' (try quote then fallback), 'search' (per symbol), or 'none'.")
     args = ap.parse_args()
 
+    # --- NEW: choose CLI symbols if provided, otherwise use DEFAULT_SYMBOLS ---
+    input_symbols = args.symbols if args.symbols else parse_symbols_string(DEFAULT_SYMBOLS)
+    if not input_symbols:
+        print("ERROR: No symbols provided via --symbols and DEFAULT_SYMBOLS is empty.")
+        return
+
     ratio_threshold = 1.0 - args.threshold
 
     # Normalize symbols to .SI and uppercase, detect duplicates, and de-duplicate while preserving order
-    normalized_symbols = [ensure_si(s) for s in args.symbols]
+    normalized_symbols = [ensure_si(s) for s in input_symbols]
     counts = Counter(normalized_symbols)
     duplicates = [f"{sym} (x{counts[sym]})" for sym in counts if counts[sym] > 1]
     if duplicates:
@@ -177,7 +199,7 @@ def main():
             ma20 = mean(last20)
             ratio = (latest / ma20) if ma20 else float("nan")
 
-            # --- NEW: dividends and yield (TTM-by-365d window) ---
+            # --- dividends and yield (TTM-by-365d window) ---
             try:
                 div1y = fetch_dividends_sum_1y(sym)
                 yield_pct = (div1y / latest * 100.0) if latest else float("nan")
@@ -192,7 +214,6 @@ def main():
                 "ma20": ma20,
                 "latest": latest,
                 "ratio": ratio,
-                # --- NEW fields ---
                 "div1y": div1y,          # total dividends per share in last 365 days
                 "yield_pct": yield_pct,  # div1y / latest * 100
             })
