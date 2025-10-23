@@ -20,6 +20,12 @@ YF_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?inter
 YF_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols}"
 YF_SEARCH_URL = "https://query2.finance.yahoo.com/v1/finance/search?q={symbol}&quotesCount=1"
 
+# --- NEW: dedicated chart URL for dividend events over a 1-year window ---
+YF_CHART_DIV_URL = (
+    "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    "?period1={p1}&period2={p2}&interval=1d&events=div&includeAdjustedClose=true"
+)
+
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
 
 def http_get_json(url, timeout=15):
@@ -79,7 +85,7 @@ def get_name_map(symbols_si, names_mode):
         for s in symbols_si:
             name_map[s] = nm.get(s, s)
         return name_map
-    except urllib.error.HTTPError as e:
+    except urllib.error.HTTPError:
         # 401/403: fall back to search per symbol
         for s in symbols_si:
             name_map[s] = try_search_name(s)
@@ -104,8 +110,39 @@ def fetch_last_20_and_latest(symbol_si):
     last20 = closes[-20:] if len(closes) >= 20 else closes
     return last20, latest
 
+# --- NEW: fetch and sum dividends in the last 365 days (by ex-div date) ---
+def fetch_dividends_sum_1y(symbol_si) -> float:
+    now = int(time.time())
+    p1 = now - 365 * 24 * 60 * 60
+    payload = http_get_json(YF_CHART_DIV_URL.format(symbol=symbol_si, p1=p1, p2=now))
+    result = payload.get("chart", {}).get("result", [])
+    if not result:
+        return 0.0
+    events = result[0].get("events", {}) or {}
+    divs = events.get("dividends") or {}
+    total = 0.0
+    # Keys are timestamps; items contain {"amount": x, "date": ts, ...}
+    for _k, v in divs.items():
+        try:
+            amt = v.get("amount")
+            ts = v.get("date") or v.get("timestamp")
+            if amt is None:
+                continue
+            # Range already bounded by period1/2, but be defensive:
+            if isinstance(ts, int):
+                if p1 <= ts <= now:
+                    total += float(amt)
+            else:
+                total += float(amt)
+        except Exception:
+            continue
+    return total
+
 def mean(vals):
     return sum(vals) / len(vals) if vals else float("nan")
+
+def is_watch_list_name(name: str) -> bool:
+    return "- watch list" in (name or "").lower()
 
 def main():
     ap = argparse.ArgumentParser(description="Filter SGX stocks by latest/MA20 ratio using Yahoo Finance.")
@@ -139,25 +176,52 @@ def main():
             last20, latest = fetch_last_20_and_latest(sym)
             ma20 = mean(last20)
             ratio = (latest / ma20) if ma20 else float("nan")
-            results.append({"code": sym, "name": name_map.get(sym, sym),
-                            "ma20": ma20, "latest": latest, "ratio": ratio})
+
+            # --- NEW: dividends and yield (TTM-by-365d window) ---
+            try:
+                div1y = fetch_dividends_sum_1y(sym)
+                yield_pct = (div1y / latest * 100.0) if latest else float("nan")
+            except Exception as e:
+                print(f"[WARN] {sym}: dividends fetch failed: {e}", file=sys.stderr)
+                div1y = float("nan")
+                yield_pct = float("nan")
+
+            results.append({
+                "code": sym,
+                "name": name_map.get(sym, sym),
+                "ma20": ma20,
+                "latest": latest,
+                "ratio": ratio,
+                # --- NEW fields ---
+                "div1y": div1y,          # total dividends per share in last 365 days
+                "yield_pct": yield_pct,  # div1y / latest * 100
+            })
         except Exception as e:
             print(f"[WARN] {sym}: {e}", file=sys.stderr)
         time.sleep(args.sleep)
 
     filtered = [r for r in results if r.get("ratio", 0) <= ratio_threshold]
+    filtered = [r for r in filtered if not is_watch_list_name(r.get("name", ""))]
     filtered.sort(key=lambda x: x["ratio"])
 
     # Print stats
     print(f"\nProcessed {len(results)} valid stocks, {len(filtered)} passed filter (price dropped by at least {100*(1-ratio_threshold):.2f}%).\n")
 
-    header = f"{'Code':<10} {'Name':<40} {'$MA20':>10} {'$Latest':>10} {'%Change':>8}"
+    header = f"{'Code':<10} {'Name':<30} {'$MA20':>10} {'$Latest':>10} {'%Change':>8} {'$Div1Y':>10} {'%Yield':>8}"
     if not filtered:
         return
 
     print(header); print("-" * len(header))
     for r in filtered:
-        print(f"{r['code']:<10} {r['name'][:38]:<40} {r['ma20']:>10.4f} {r['latest']:>10.4f} {(100*(r['ratio']-1.0)):>8.2f}")
+        print(
+            f"{r['code']:<10} "
+            f"{r['name'][:28]:<30} "
+            f"{r['ma20']:>10.4f} "
+            f"{r['latest']:>10.4f} "
+            f"{(100*(r['ratio']-1.0)):>8.2f} "
+            f"{r.get('div1y', float('nan')):>10.4f} "
+            f"{r.get('yield_pct', float('nan')):>8.2f}"
+        )
 
 if __name__ == "__main__":
     main()
