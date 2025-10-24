@@ -8,6 +8,7 @@ Usage example:
 If --symbols is omitted, the script will use DEFAULT_SYMBOLS defined below, formatted like: [CC3 G13 N2IU C6L]
 """
 
+from __future__ import annotations
 import argparse
 import json
 import sys
@@ -21,7 +22,6 @@ import re
 import math
 from tqdm import tqdm
 from collections import Counter
-from __future__ import annotations
 
 try:
     import brotli  # optional
