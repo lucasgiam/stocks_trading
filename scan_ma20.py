@@ -21,7 +21,7 @@ import re
 import math
 from tqdm import tqdm
 from collections import Counter
-from __future__ inport annotations
+from __future__ import annotations
 
 try:
     import brotli  # optional
