@@ -3,7 +3,7 @@ Scan SGX tickers on Yahoo (.SI) against MA20.
 Stocks whose last close price dropped below the MA20 by at least the threshold percentage will be shown in the output.
 
 Usage example:
-    python scan_ma20.py --symbols CC3 G13 N2IU C6L F34 BS6 Z74 O39 --threshold 0.05
+    python scan_ma20.py --symbols CC3 G13 N2IU C6L F34 BS6 Z74 O39 --price_thres 5.0 --div_thres 3.0
 
 If --symbols is omitted, the script will use DEFAULT_SYMBOLS defined below, formatted like: [CC3 G13 N2IU C6L]
 """
@@ -114,7 +114,7 @@ def fetch_last_20_and_latest(symbol_si):
     last20 = closes[-20:] if len(closes) >= 20 else closes
     return last20, latest
 
-# --- NEW: fetch and sum dividends in the last 365 days (by ex-div date) ---
+# Fetch and sum dividends in the last 365 days (by ex-div date)
 def fetch_dividends_sum_1y(symbol_si) -> float:
     now = int(time.time())
     p1 = now - 365 * 24 * 60 * 60
@@ -163,20 +163,23 @@ def parse_symbols_string(s: str) -> list[str]:
 def main():
     ap = argparse.ArgumentParser(description="Filter SGX stocks by latest/MA20 ratio using Yahoo Finance.")
     ap.add_argument("--symbols", nargs="+", help="SGX codes with/without .SI (e.g. CC3 G13 N2IU C6L)")
-    ap.add_argument("--threshold", type=float, default=0.05,
-                    help="A threshold of 0.05 means −5% below MA20 (ratio ≤ 0.95).")
+    ap.add_argument("--price_thres", type=float, default=5.0,
+                    help="Price threshold in PERCENT (e.g., 5.0 means latest ≤ MA20 - 5%).")
+    ap.add_argument("--div_thres", type=float, default=0.0,
+                    help="Minimum dividend yield in percent to include (e.g., 3.0 means ≥ 3%).")
     ap.add_argument("--sleep", type=float, default=0.3, help="Seconds to sleep between requests.")
     ap.add_argument("--names", choices=["auto","search","none"], default="auto",
                     help="How to fetch names: 'auto' (try quote then fallback), 'search' (per symbol), or 'none'.")
     args = ap.parse_args()
 
-    # --- NEW: choose CLI symbols if provided, otherwise use DEFAULT_SYMBOLS ---
+    # --- choose CLI symbols if provided, otherwise use DEFAULT_SYMBOLS ---
     input_symbols = args.symbols if args.symbols else parse_symbols_string(DEFAULT_SYMBOLS)
     if not input_symbols:
         print("ERROR: No symbols provided via --symbols and DEFAULT_SYMBOLS is empty.")
         return
 
-    ratio_threshold = 1.0 - args.threshold
+    # Interpret price_thres as percent
+    ratio_threshold = 1.0 - (args.price_thres / 100.0)
 
     # Normalize symbols to .SI and uppercase, detect duplicates, and de-duplicate while preserving order
     normalized_symbols = [ensure_si(s) for s in input_symbols]
@@ -221,12 +224,17 @@ def main():
             print(f"[WARN] {sym}: {e}", file=sys.stderr)
         time.sleep(args.sleep)
 
+    # Filter by price drop vs MA20
     filtered = [r for r in results if r.get("ratio", 0) <= ratio_threshold]
+    # Filter out watch list names
     filtered = [r for r in filtered if not is_watch_list_name(r.get("name", ""))]
+    # Filter by dividend yield percent threshold
+    filtered = [r for r in filtered if r.get("yield_pct", float("nan")) >= args.div_thres]
+
     filtered.sort(key=lambda x: x["ratio"])
 
     # Print stats
-    print(f"\nProcessed {len(results)} valid stocks, {len(filtered)} passed filter (price dropped by at least {100*(1-ratio_threshold):.2f}%).\n")
+    print(f"\nProcessed {len(results)} valid stocks, {len(filtered)} passed filter (price dropped by at least {100*(1-ratio_threshold):.2f}% and yield ≥ {args.div_thres:.2f}%).\n")
 
     header = f"{'Code':<10} {'Name':<30} {'$MA20':>10} {'$Latest':>10} {'%Change':>8} {'$Div1Y':>10} {'%Yield':>8}"
     if not filtered:
