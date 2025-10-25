@@ -495,7 +495,7 @@ def main():
         return f"{x:>{w}.{p}f}" if isinstance(x, (int, float)) and math.isfinite(x) else f"{'nan':>{w}}"
 
     header = (
-        f"{'Code':<6} {'Name':<20} {'$MA20':>8} {'$Latest':>8} {'%Change':>7} "
+        f"{'Code':<6} {'Name':<15} {'$MA20':>8} {'$Latest':>8} {'%Change':>7} "
         f"{'PE_TTM':>7} {'PE_Fwd':>7} {'DivY%':>7} {'5YDiv%':>7} {'NPM%':>7}"
     )
     if not filtered:
@@ -505,7 +505,7 @@ def main():
     for r in filtered:
         print(
             f"{r.get('code','').removesuffix('.SI'):<6} "
-            f"{r['name'][:20]:<20} "
+            f"{r['name'][:15]:<15} "
             f"{fmtf(r['ma20'], 8, 3)} "
             f"{fmtf(r['latest'], 8, 3)} "
             f"{fmtf(100*(r['ratio']-1.0), 7, 2)} "
