@@ -3,7 +3,7 @@ Scan SGX tickers on Yahoo (.SI) against MA20.
 Stocks whose last close price dropped below the MA20 by at least the threshold percentage will be shown in the output.
 
 Usage example:
-    python scan_ma20.py --symbols CC3 G13 N2IU C6L F34 BS6 Z74 O39 --price_thres 5.0 --div_thres 1 --pe_thres 20 --npm_thres 5 --incl_nan True
+    python scan_ma20.py --symbols CC3 G13 N2IU C6L F34 BS6 Z74 O39 --price_thres 5 --div_thres 1 --pe_thres 20 --npm_thres 0
 
 If --symbols is omitted, the script will use DEFAULT_SYMBOLS defined below, formatted like: [CC3 G13 N2IU C6L]
 """
@@ -368,17 +368,14 @@ def parse_symbols_string(s: str) -> list[str]:
 def main():
     ap = argparse.ArgumentParser(description="Filter SGX stocks by latest/MA20 ratio using Yahoo Finance.")
     ap.add_argument("--symbols", nargs="+", help="SGX codes with/without .SI (e.g. CC3 G13 N2IU C6L)")
-    ap.add_argument("--price_thres", type=float, default=5.0,
-                    help="Price threshold in PERCENT (e.g., 5.0 means latest ≤ MA20 - 5%).")
-    ap.add_argument("--div_thres", type=float, default=1.0,
-                    help="Dividend threshold in PERCENT. Keep only if max(DivY%, DivY5Y%) > div_thres.")
-    ap.add_argument("--pe_thres", type=float, default=20.0,
-                    help="P/E threshold (unitless). Keep only if min(PE_TTM, PE_Fwd) < pe_thres.")
-    ap.add_argument("--npm_thres", type=float, default=5.0,
-                    help="Net profit margin threshold in PERCENT. Keep only if NPM% ≥ npm_thres.")
-    ap.add_argument("--incl_nan", type=lambda s: s.lower() in ("true", "1", "yes", "y"),
-                    default=False,
-                    help="If True, NaN/inf values are allowed to pass filters. If False (default), NaN/inf fails.")
+    ap.add_argument("--price_thres", type=float, default=None,
+                    help="If set, filter for latest ≤ MA20 - price_thres (in %).")
+    ap.add_argument("--div_thres", type=float, default=None,
+                    help="If set, keep only if max(DivY%, DivY5Y%) > div_thres.")
+    ap.add_argument("--pe_thres", type=float, default=None,
+                    help="If set, keep only if min(PE_TTM, PE_Fwd) < pe_thres.")
+    ap.add_argument("--npm_thres", type=float, default=None,
+                    help="If set, keep only if NPM% ≥ npm_thres.")
     ap.add_argument("--sleep", type=float, default=0.3, help="Seconds to sleep between requests.")
     ap.add_argument("--names", choices=["auto","search","none"], default="auto",
                     help="How to fetch names: 'auto' (try quote then fallback), 'search' (per symbol), or 'none'.")
@@ -389,7 +386,9 @@ def main():
         print("ERROR: No symbols provided via --symbols and DEFAULT_SYMBOLS is empty.")
         return
 
-    ratio_threshold = 1.0 - (args.price_thres / 100.0)
+    # Price ratio filter threshold only if provided
+    if args.price_thres is not None:
+        ratio_threshold = 1.0 - (args.price_thres / 100.0)
 
     normalized_symbols = [ensure_si(s) for s in input_symbols]
     counts = Counter(normalized_symbols)
@@ -433,19 +432,32 @@ def main():
             print(f"[WARN] {sym}: {e}", file=sys.stderr)
         time.sleep(args.sleep)
 
-    filtered = [r for r in results if r.get("ratio", 0) <= ratio_threshold]
+    # Start with all rows; apply filters only if the corresponding arg is provided
+    if args.price_thres is not None:
+        filtered = [r for r in results if r.get("ratio", 0) <= ratio_threshold]
+    else:
+        filtered = list(results)
+
+    # Always remove watch list names
     filtered = [r for r in filtered if not is_watch_list_name(r.get("name", ""))]
 
     def is_valid(x):
         return isinstance(x, (int, float)) and math.isfinite(x)
 
-    if not args.incl_nan:
-        FUND_KEYS = ("pe_ttm", "pe_fwd", "div_yield_pct", "div_yield_5y_pct", "profit_margin_pct")
-        filtered = [
-            r for r in filtered
-            if all(is_valid(r.get(k, float("nan"))) for k in FUND_KEYS)
-        ]
+    # Always drop rows where *both* DivY and 5YDiv are NaN (regardless of div_thres presence)
+    filtered = [
+        r for r in filtered
+        if (is_valid(r.get("div_yield_pct", float("nan"))) or
+            is_valid(r.get("div_yield_5y_pct", float("nan"))))
+    ]
+    # Always drop rows where *both* PE values are NaN (regardless of pe_thres presence)
+    filtered = [
+        r for r in filtered
+        if (is_valid(r.get("pe_ttm", float("nan"))) or
+            is_valid(r.get("pe_fwd", float("nan"))))
+    ]
 
+    # Define per-metric checks (used only if corresponding arg is set)
     def dividend_ok(r):
         dy = r.get("div_yield_pct", float("nan"))
         dy5 = r.get("div_yield_5y_pct", float("nan"))
@@ -457,7 +469,7 @@ def main():
             return dy > args.div_thres
         if v2 and not v1:
             return dy5 > args.div_thres
-        return False  # both NaN
+        return False
 
     def pe_ok(r):
         pe1 = r.get("pe_ttm", float("nan"))
@@ -470,7 +482,7 @@ def main():
             return pe1 < args.pe_thres
         if v2 and not v1:
             return pe2 < args.pe_thres
-        return False  # both NaN
+        return False
 
     def npm_ok(r):
         npm = r.get("profit_margin_pct", float("nan"))
@@ -478,17 +490,31 @@ def main():
             npm = 0.0
         return npm >= args.npm_thres
 
-    filtered = [r for r in filtered if dividend_ok(r) and pe_ok(r) and npm_ok(r)]
+    # Apply only the filters that were explicitly provided
+    if args.div_thres is not None:
+        filtered = [r for r in filtered if dividend_ok(r)]
+    if args.pe_thres is not None:
+        filtered = [r for r in filtered if pe_ok(r)]
+    if args.npm_thres is not None:
+        filtered = [r for r in filtered if npm_ok(r)]
 
     filtered.sort(key=lambda x: x["ratio"])
 
+    # Build dynamic summary of which filters were applied
+    applied = []
+    if args.price_thres is not None:
+        applied.append(f"price ≤ MA20 - {args.price_thres:.2f}%")
+    if args.div_thres is not None:
+        applied.append(f"max(DivY,DivY5Y) > {args.div_thres:.2f}%")
+    if args.pe_thres is not None:
+        applied.append(f"min(PE_TTM,PE_Fwd) < {args.pe_thres:.2f}")
+    if args.npm_thres is not None:
+        applied.append(f"NPM ≥ {args.npm_thres:.2f}%")
+    applied_str = "; ".join(applied) if applied else "no extra filters"
+
     print(
-        f"\nProcessed {len(results)} valid stocks, {len(filtered)} passed filter: "
-        f"price ≤ MA20 - {args.price_thres:.2f}%, "
-        f"max(DivY,DivY5Y) > {args.div_thres:.2f}%, "
-        f"min(PE_TTM,PE_Fwd) < {args.pe_thres:.2f}, "
-        f"NPM ≥ {args.npm_thres:.2f}%, "
-        f"NaN values {'included' if args.incl_nan else 'omitted'}\n"
+        f"\nProcessed {len(results)} valid stocks, {len(filtered)} passed filter"
+        f"{'s' if len(applied) > 1 else ''}: {applied_str}\n"
     )
 
     def fmtf(x, w, p):
