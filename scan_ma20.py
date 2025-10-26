@@ -166,13 +166,18 @@ def fetch_last_20_and_latest(symbol_si):
     if not result:
         raise ValueError("No chart result")
     r = result[0]
-    closes = (r.get("indicators", {}).get("quote", [{}])[0].get("close") or [])
-    closes = [c for c in closes if c is not None]
-    if not closes:
+    q = (r.get("indicators", {}).get("quote", [{}]) or [{}])[0]
+    highs = q.get("high") or []
+    lows = q.get("low") or []
+    closes = q.get("close") or []
+
+    closes_valid = [c for c in closes if c is not None]
+    if not closes_valid:
         raise ValueError("No close prices")
-    latest = closes[-1]
-    last20 = closes[-20:] if len(closes) >= 20 else closes
-    return last20, latest
+    latest = closes_valid[-1]
+    last20 = closes_valid[-20:] if len(closes_valid) >= 20 else closes_valid
+    # Also return raw highs/lows/closes (with possible None) for ATR calculation
+    return last20, latest, highs, lows, closes
 
 _JSON_BLOCK_RE = re.compile(r'"QuoteSummaryStore"\s*:\s*{', re.IGNORECASE)
 
@@ -365,6 +370,33 @@ def parse_symbols_string(s: str) -> list[str]:
         s = s[1:-1]
     return [tok for tok in s.split() if tok]
 
+# ===== ATR20 calculation =====
+def compute_atr20(highs, lows, closes):
+    """
+    Compute ATR(20) from daily high/low/close arrays (may contain None).
+    TR_t = max(High-Low, |High-PrevClose|, |Low-PrevClose|)
+    ATR20 = mean of last up-to-20 TR values available.
+    """
+    tr_list = []
+    prev_close = None
+    n = max(len(highs), len(lows), len(closes))
+    for i in range(n):
+        h = highs[i] if i < len(highs) else None
+        l = lows[i] if i < len(lows) else None
+        c = closes[i] if i < len(closes) else None
+        if h is None or l is None:
+            prev_close = c if c is not None else prev_close
+            continue
+        if prev_close is None:
+            tr = h - l
+        else:
+            tr = max(h - l, abs(h - prev_close), abs(l - prev_close))
+        if isinstance(tr, (int, float)) and math.isfinite(tr):
+            tr_list.append(tr)
+        prev_close = c if c is not None else prev_close
+    last20_tr = tr_list[-20:] if len(tr_list) >= 20 else tr_list
+    return mean(last20_tr)
+
 def main():
     ap = argparse.ArgumentParser(description="Filter SGX stocks by latest/MA20 ratio using Yahoo Finance.")
     ap.add_argument("--symbols", nargs="+", help="SGX codes with/without .SI (e.g. CC3 G13 N2IU C6L)")
@@ -410,9 +442,12 @@ def main():
     results = []
     for sym in tqdm(symbols_si, desc="Scanning", unit="stock"):
         try:
-            last20, latest = fetch_last_20_and_latest(sym)
+            last20, latest, highs, lows, closes = fetch_last_20_and_latest(sym)
             ma20 = mean(last20)
             ratio = (latest / ma20) if ma20 else float("nan")
+
+            atr20 = compute_atr20(highs, lows, closes)
+            atr20_pct = (atr20 / ma20) if (isinstance(atr20, (int, float)) and math.isfinite(atr20) and ma20 and math.isfinite(ma20)) else float("nan")
 
             f = fetch_fundamentals(sym)
 
@@ -422,6 +457,8 @@ def main():
                 "ma20": ma20,
                 "latest": latest,
                 "ratio": ratio,
+                "atr20": atr20,
+                "atr20_pct": atr20_pct,
                 "pe_ttm": f["pe_ttm"],
                 "pe_fwd": f["pe_fwd"],
                 "div_yield_pct": f["div_yield_pct"],
@@ -521,8 +558,9 @@ def main():
         return f"{x:>{w}.{p}f}" if isinstance(x, (int, float)) and math.isfinite(x) else f"{'nan':>{w}}"
 
     header = (
-        f"{'Code':<6} {'Name':<15} {'$MA20':>8} {'$Latest':>8} {'%Change':>7} "
-        f"{'PE_TTM':>7} {'PE_Fwd':>7} {'DivY%':>7} {'5YDiv%':>7} {'NPM%':>7}"
+        f"{'Code':<5} {'Name':<13} {'$MA20':>7} {'$Latest':>7} {'%Change':>6} "
+        f"{'$ATR20':>7} {'%ATR/MA':>6} "
+        f"{'PE_TTM':>6} {'PE_Fwd':>6} {'DivY%':>6} {'5YDiv%':>6} {'NPM%':>6}"
     )
     if not filtered:
         return
@@ -530,17 +568,20 @@ def main():
     print(header); print("-" * len(header))
     for r in filtered:
         print(
-            f"{r.get('code','').removesuffix('.SI'):<6} "
-            f"{r['name'][:15]:<15} "
-            f"{fmtf(r['ma20'], 8, 3)} "
-            f"{fmtf(r['latest'], 8, 3)} "
-            f"{fmtf(100*(r['ratio']-1.0), 7, 2)} "
-            f"{fmtf(r.get('pe_ttm', float('nan')), 7, 2)} "
-            f"{fmtf(r.get('pe_fwd', float('nan')), 7, 2)} "
-            f"{fmtf(r.get('div_yield_pct', float('nan')), 7, 2)} "
-            f"{fmtf(r.get('div_yield_5y_pct', float('nan')), 7, 2)} "
-            f"{fmtf(r.get('profit_margin_pct', float('nan')), 7, 2)}"
+            f"{r.get('code','').removesuffix('.SI'):<5} "
+            f"{r['name'][:13]:<13} "
+            f"{fmtf(r['ma20'], 7, 3)} "
+            f"{fmtf(r['latest'], 7, 3)} "
+            f"{fmtf(100*(r['ratio']-1.0), 6, 2)} "
+            f"{fmtf(r.get('atr20', float('nan')), 7, 3)} "
+            f"{fmtf(100*(r.get('atr20_pct', float('nan'))), 6, 2)} "
+            f"{fmtf(r.get('pe_ttm', float('nan')), 6, 2)} "
+            f"{fmtf(r.get('pe_fwd', float('nan')), 6, 2)} "
+            f"{fmtf(r.get('div_yield_pct', float('nan')), 6, 2)} "
+            f"{fmtf(r.get('div_yield_5y_pct', float('nan')), 6, 2)} "
+            f"{fmtf(r.get('profit_margin_pct', float('nan')), 6, 2)}"
         )
+
 
 if __name__ == "__main__":
     main()
