@@ -598,8 +598,8 @@ def main():
         return f"{x:>{w}.{p}f}" if isinstance(x, (int, float)) and math.isfinite(x) else f"{'nan':>{w}}"
 
     header = (
-        f"{'Code':<5} {'Name':<15} {'$MA20':>7} {'$Latest':>7} {'%△L/MA':>6} "
-        f"{'$ATR20':>7} {'%ATR/MA':>6} {'%△MA/day':>9} "
+        f"{'Code':<5} {'Name':<12} {'$MA20':>7} {'$Latest':>7} {'%△L/MA':>6} "
+        f"{'$ATR20':>7} {'%ATR/MA':>6} {'%△MA/d':>7} "
         f"{'PE_TTM':>6} {'PE_Fwd':>6} {'%Div1Y':>6} {'%Div5Y':>6} {'%NPM':>5}"
     )
     if not filtered:
@@ -609,13 +609,13 @@ def main():
     for r in filtered:
         print(
             f"{r.get('code','').removesuffix('.SI'):<5} "
-            f"{r['name'][:15]:<15} "
+            f"{r['name'][:12]:<12} "
             f"{fmtf(r['ma20'], 7, 3)} "
             f"{fmtf(r['latest'], 7, 3)} "
             f"{fmtf(100*(r['ratio']-1.0), 6, 2)} "
             f"{fmtf(r.get('atr20', float('nan')), 7, 3)} "
             f"{fmtf(100*(r.get('atr20_pct', float('nan'))), 6, 2)} "
-            f"{fmtf(r.get('ma20_pct_day', float('nan')), 9, 2)} "
+            f"{fmtf(r.get('ma20_pct_day', float('nan')), 7, 2)} "
             f"{fmtf(r.get('pe_ttm', float('nan')), 6, 2)} "
             f"{fmtf(r.get('pe_fwd', float('nan')), 6, 2)} "
             f"{fmtf(r.get('div_yield_pct', float('nan')), 6, 2)} "
