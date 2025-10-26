@@ -27,7 +27,8 @@ from collections import Counter
 DEFAULT_SYMBOLS = "[HTCD HBBD HCCD HBND HSHD HPCD HXXD HPAD HYDD D05 HSMD HMTD TDED O39 Z74 Z77 HJDD U11 HPPD K6S TADD S63 J36 Q0F TATD NIO C6L S68 F34 C38U H78 BN4 TPED TKKD TCPD A17U 9CI BS6 SO7 Y92 C07 U96 G13 IICD N2IU G07 5E2 U14 M44U C09 ME8U D01 AJBU EMI M04 T14 S58 J69U U06 V03 K71U TQ5 T82U S59 CJLU VC2 BUOU YF8 HMN E5H OV8 H02 C52 AIY A7RU EB5 C2PU S07 H15 U10 P8Z P7VU F17 NS8U 9A4U F99 CC3 8C8U TS0U BSL OYY BVA H22 JYEU CY6U A50 H13 AU8U Z25 NTDU AGS P40U SET F03 AP4 Q5T OU8 S41 ADN P15 O5RU G92 BEC W05 B61 J85 S61 558 S08 EH5 LJ3 T6I F9D CRPU P52 DCRU S20 STG U9E CHZ NC2 H07 RE4 QES E3B E28 BWM P9D O10 H30 AW9U B58 WJP C41 AWX V5Q 544 F83 T15 Q01 H18 8AZ S56 TSH P34 5JS M1GU QC7 U13 5TP 1D0 BHK F1E MZH BBW MV4 M01 5UF T24 5UX DHLU PCT 5IG ODBU B28 8U7U UD1U 5WJ S35 5GD Y03 MXNU 41O OXMU BN2 HQU NPW BDX S85 N02 5LY BTE JLB 5CF CMOU AWZ CLN TCU S3N 500 BTM 1MZ QNS ZKX KUO 5JK H12 5DD A30 DU4 G20 5VS ER0 BMGU 5WH J2T 5HV DM0 40T C33 HLS A04 X5N AWI Z59 XZL 5IC S7OU I07 BQM BQF BTOU BEW XJB L19 D03 42R 564 LVR M14 MR7 5ML RXS BTG T13 G0I A31 BLS T12 G50 5DP 579 C9Q 1L2 S23 L02 BPF F86 OAJ S19 5WA 1F2 Q0X PPC K75 WPC L38 S44 WKS BIP 1J5 5SO D5IU BTP BQD U77 N08 1J4 BCY 5MZ V7R 1E3 YYR YYY 41B Y35 NR7 O9E 42E BDR B69 40V 5SR URR 595 533 42L 566 RQ1 BNE ZB9 42C BKA BHU 5AE T41 B49 F13 5DM D8DU 546 BEZ S69 ZXY 42T C06 YK9 BBP 1D1 GEH 5WF KJ5 5G2 8K7 I49 T55 K29 M05 5DS C8R 1AZ 42W Y3D NEX 1Y1 A55 1B1 5I1 BKX 5UL 569 BEI S29 FQ7 53W S9B BIX 1F3 5EG LMS T43 C05 N01 AYN C76 9G2 1A1 O08 AWG 8YY I06 5PC 5GZ UIX 43A BFI L23 5TT N0Z 42F CHJ R14 P8A 5HH 541 5F7 YYN 554 BTJ 596 DRX LS9 1R6 Y8E 1V3 C13 VIN BQC SGR 5NV BQN CIN 5PD 5AB CNE OTX E27 BXE NPL AVX 532 5OI A33 GRQ 43B FRQ BKW 540 BFU 5KI 1H8 43Q BDU P36 5NF S71 C04 594 AOF K03 MIJ 505 543 AAJ 5AU CTO 5GI 5SY BQP OTS AJ2 5AL 1D4 XHV BAZ 1B0 A52 BJZ BCV VI2 AWC BRD BTX 5RA BJV 5AI KUX TVV E6R 5BI BFT 43E 42N 40W 5G1 MF6 5WV 5VP 5EV N32 504 1D5 CEDU 5FW 5VC PRH 570 5PF H20 1B6 TWL BHD BLZ 49B 5EB BFK 1H2 5DO SEJ ENV 5EF AZA F10 5G9 41F 5HG 583 5TJ 584 5IF BKZ QS9 BCZ M15 SES QZG OMK P74 J03 9QX 581 40N WJ9 5F4 5QY 5EW 5RC XCF YYB 9I7 NHD GU5 Y06 M03 V3M V8Y AWV 5OX 1D3 5UA 5G4 BLR 580 BAI BLU 43F 5FX AWK 585 5DX BKK 5CR I11 41T 8A1 KUH M11 1F0 CYW 5OR 1F1 BAC V2Y 5RE BKV 42Z 9VW LYY BEH E9L AWM AYV Z4D BJD]"
 # ================================
 
-YF_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1mo&includeAdjustedClose=true"
+# Fetch ~2 months to ensure we have enough bars for a 20-point MA20 series
+YF_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=2mo&includeAdjustedClose=true"
 YF_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols}&lang=en-US&region=US"
 YF_QUOTE_URL_ALT = "https://query2.finance.yahoo.com/v7/finance/quote?symbols={symbols}&lang=en-US&region=US"
 YF_SEARCH_URL = "https://query2.finance.yahoo.com/v1/finance/search?q={symbol}&quotesCount=1"
@@ -359,6 +360,33 @@ def fetch_fundamentals(symbol_si):
 def mean(vals):
     return sum(vals) / len(vals) if vals else float("nan")
 
+# ===== helpers for MA20 slope over last 20 MA points =====
+def ma_series(closes_valid, n=20):
+    """Return full moving-average series (simple MA) for window n."""
+    out = []
+    if len(closes_valid) < n:
+        return out
+    s = sum(closes_valid[:n])
+    out.append(s / n)
+    for i in range(n, len(closes_valid)):
+        s += closes_valid[i] - closes_valid[i - n]
+        out.append(s / n)
+    return out
+
+def slope_ls(y):
+    """Least-squares slope vs index [0..len(y)-1]. Returns units/day."""
+    n = len(y)
+    if n < 2:
+        return float("nan")
+    sx = n * (n - 1) / 2.0
+    sxx = (n - 1) * n * (2 * n - 1) / 6.0
+    sy = sum(y)
+    sxy = sum(i * y[i] for i in range(n))
+    denom = n * sxx - sx * sx
+    if denom == 0:
+        return float("nan")
+    return (n * sxy - sx * sy) / denom
+
 def is_watch_list_name(name: str) -> bool:
     return "- watch list" in (name or "").lower()
 
@@ -446,6 +474,17 @@ def main():
             ma20 = mean(last20)
             ratio = (latest / ma20) if ma20 else float("nan")
 
+            # ===== MA20 slope over the last 20 MA points =====
+            closes_valid = [c for c in closes if c is not None]
+            ma20_all = ma_series(closes_valid, 20)
+            if len(ma20_all) >= 20:
+                ma20_last20 = ma20_all[-20:]
+                s = slope_ls(ma20_last20)  # units: price per day (across MA20 points)
+                ma20_now = ma20_last20[-1] if ma20_last20 else float("nan")
+                ma_pct_per_day = (100.0 * s / ma20_now) if (ma20_now and math.isfinite(s)) else float("nan")
+            else:
+                ma_pct_per_day = float("nan")
+
             atr20 = compute_atr20(highs, lows, closes)
             atr20_pct = (atr20 / ma20) if (isinstance(atr20, (int, float)) and math.isfinite(atr20) and ma20 and math.isfinite(ma20)) else float("nan")
 
@@ -464,6 +503,7 @@ def main():
                 "div_yield_pct": f["div_yield_pct"],
                 "div_yield_5y_pct": f["div_yield_5y_pct"],
                 "profit_margin_pct": f["profit_margin_pct"],
+                "ma20_pct_day": ma_pct_per_day,
             })
         except Exception as e:
             print(f"[WARN] {sym}: {e}", file=sys.stderr)
@@ -558,9 +598,9 @@ def main():
         return f"{x:>{w}.{p}f}" if isinstance(x, (int, float)) and math.isfinite(x) else f"{'nan':>{w}}"
 
     header = (
-        f"{'Code':<5} {'Name':<18} {'$MA20':>7} {'$Latest':>7} {'%Change':>6} "
-        f"{'$ATR20':>7} {'%ATR/MA':>6} "
-        f"{'PE_TTM':>6} {'PE_Fwd':>6} {'DivY%':>6} {'5YDiv%':>6} {'NPM%':>6}"
+        f"{'Code':<5} {'Name':<15} {'$MA20':>7} {'$Latest':>7} {'%△L/MA':>6} "
+        f"{'$ATR20':>7} {'%ATR/MA':>6} {'%△MA/day':>9} "
+        f"{'PE_TTM':>6} {'PE_Fwd':>6} {'%Div1Y':>6} {'%Div5Y':>6} {'%NPM':>5}"
     )
     if not filtered:
         return
@@ -569,19 +609,19 @@ def main():
     for r in filtered:
         print(
             f"{r.get('code','').removesuffix('.SI'):<5} "
-            f"{r['name'][:18]:<18} "
+            f"{r['name'][:15]:<15} "
             f"{fmtf(r['ma20'], 7, 3)} "
             f"{fmtf(r['latest'], 7, 3)} "
             f"{fmtf(100*(r['ratio']-1.0), 6, 2)} "
             f"{fmtf(r.get('atr20', float('nan')), 7, 3)} "
             f"{fmtf(100*(r.get('atr20_pct', float('nan'))), 6, 2)} "
+            f"{fmtf(r.get('ma20_pct_day', float('nan')), 9, 2)} "
             f"{fmtf(r.get('pe_ttm', float('nan')), 6, 2)} "
             f"{fmtf(r.get('pe_fwd', float('nan')), 6, 2)} "
             f"{fmtf(r.get('div_yield_pct', float('nan')), 6, 2)} "
             f"{fmtf(r.get('div_yield_5y_pct', float('nan')), 6, 2)} "
             f"{fmtf(r.get('profit_margin_pct', float('nan')), 6, 2)}"
         )
-
 
 if __name__ == "__main__":
     main()
