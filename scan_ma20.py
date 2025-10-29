@@ -425,6 +425,16 @@ def compute_atr20(highs, lows, closes):
     last20_tr = tr_list[-20:] if len(tr_list) >= 20 else tr_list
     return mean(last20_tr)
 
+# ===== STD20 (of last 20 closes) =====
+def std20_from_last20(last20):
+    """Population std dev of the last-20 close prices."""
+    n = len(last20)
+    if n == 0:
+        return float("nan")
+    m = mean(last20)
+    var = sum((x - m) ** 2 for x in last20) / n
+    return math.sqrt(var)
+
 def main():
     ap = argparse.ArgumentParser(description="Filter SGX stocks by latest/MA20 ratio using Yahoo Finance.")
     ap.add_argument("--symbols", nargs="+", help="SGX codes with/without .SI (e.g. CC3 G13 N2IU C6L)")
@@ -488,6 +498,10 @@ def main():
             atr20 = compute_atr20(highs, lows, closes)
             atr20_pct = (atr20 / ma20) if (isinstance(atr20, (int, float)) and math.isfinite(atr20) and ma20 and math.isfinite(ma20)) else float("nan")
 
+            # ===== STD20 & Z20 =====
+            std20 = std20_from_last20(last20)
+            z20 = ((latest - ma20) / std20) if (std20 and math.isfinite(std20) and ma20 and math.isfinite(ma20)) else float("nan")
+
             f = fetch_fundamentals(sym)
 
             results.append({
@@ -504,6 +518,8 @@ def main():
                 "div_yield_5y_pct": f["div_yield_5y_pct"],
                 "profit_margin_pct": f["profit_margin_pct"],
                 "ma20_pct_day": ma_pct_per_day,
+                "std20": std20,
+                "z20": z20,
             })
         except Exception as e:
             print(f"[WARN] {sym}: {e}", file=sys.stderr)
@@ -600,7 +616,8 @@ def main():
     header = (
         f"{'Code':<5} {'Name':<12} {'$MA20':>7} {'$Latest':>7} {'%△L/MA':>6} "
         f"{'$ATR20':>7} {'%ATR/MA':>6} {'%△MA/d':>7} "
-        f"{'PE_TTM':>6} {'PE_Fwd':>6} {'%Div1Y':>6} {'%Div5Y':>6} {'%NPM':>5}"
+        f"{'PE_TTM':>6} {'PE_Fwd':>6} {'%Div1Y':>6} {'%Div5Y':>6} {'%NPM':>5} "
+        f"{'STD20':>7} {'Z20':>6}"
     )
     if not filtered:
         return
@@ -620,7 +637,9 @@ def main():
             f"{fmtf(r.get('pe_fwd', float('nan')), 6, 2)} "
             f"{fmtf(r.get('div_yield_pct', float('nan')), 6, 2)} "
             f"{fmtf(r.get('div_yield_5y_pct', float('nan')), 6, 2)} "
-            f"{fmtf(r.get('profit_margin_pct', float('nan')), 6, 2)}"
+            f"{fmtf(r.get('profit_margin_pct', float('nan')), 6, 2)} "
+            f"{fmtf(r.get('std20', float('nan')), 7, 3)} "
+            f"{fmtf(r.get('z20', float('nan')), 6, 2)}"
         )
 
 if __name__ == "__main__":
