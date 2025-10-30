@@ -451,30 +451,30 @@ def main():
 
     # ===== One-row compact table (short labels & widths) =====
     header = (
-        f"{'Symbol':<6} {'Name':<12} "
-        f"{'LC':>7} {'MA20':>7} {'MA50':>7} {'MA100':>7} {'MA200':>7} "
-        f"{'Delta%':>7} {'SD20':>7} {'Z-SD':>7} {'ATR20':>7} {'Z-ATR':>7} {'RSI14':>7} {'Div1Y%':>7} {'Div5Y%':>7}"
+        f"{'Code':<5} {'Name':<12} "
+        f"{'LC':>6} {'MA20':>6} {'MA50':>6} {'MA100':>6} {'MA200':>6} "
+        f"{'Delta%':>6} {'SD20':>6} {'Z-SD':>6} {'ATR20':>6} {'Z-ATR':>6} {'RSI14':>6} {'Div1Y%':>6} {'Div5Y%':>6}"
     )
     print(header)
     print("-" * len(header))
 
     for r in filtered:
         print(
-            f"{r['Symbol']:<6} "
+            f"{r['Symbol']:<5} "
             f"{(r['Name'] or '')[:12]:<12} "
-            f"{fmtf(r['LC'],    7, 3)} "
-            f"{fmtf(r['MA20'],  7, 3)} "
-            f"{fmtf(r['MA50'],  7, 3)} "
-            f"{fmtf(r['MA100'], 7, 3)} "
-            f"{fmtf(r['MA200'], 7, 3)} "
-            f"{fmtf(r['Delta%'], 7, 2)} "
-            f"{fmtf(r['STD20'],  7, 3)} "
-            f"{fmtf(r['Z-STD'],  7, 2)} "
-            f"{fmtf(r['ATR20'],  7, 3)} "
-            f"{fmtf(r['Z-ATR'],  7, 2)} "
-            f"{fmtf(r['RSI14'],  7, 2)} "
-            f"{fmtf(r['DivYield1Y'], 7, 2)} "
-            f"{fmtf(r['DivYield5Y'], 7, 2)}"
+            f"{fmtf(r['LC'],    6, 3)} "
+            f"{fmtf(r['MA20'],  6, 3)} "
+            f"{fmtf(r['MA50'],  6, 3)} "
+            f"{fmtf(r['MA100'], 6, 3)} "
+            f"{fmtf(r['MA200'], 6, 3)} "
+            f"{fmtf(r['Delta%'], 6, 2)} "
+            f"{fmtf(r['STD20'],  6, 3)} "
+            f"{fmtf(r['Z-STD'],  6, 2)} "
+            f"{fmtf(r['ATR20'],  6, 3)} "
+            f"{fmtf(r['Z-ATR'],  6, 2)} "
+            f"{fmtf(r['RSI14'],  6, 2)} "
+            f"{fmtf(r['DivYield1Y'], 6, 2)} "
+            f"{fmtf(r['DivYield5Y'], 6, 2)}"
         )
 
 if __name__ == "__main__":
