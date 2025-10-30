@@ -451,30 +451,30 @@ def main():
 
     # ===== One-row compact table (short labels & widths) =====
     header = (
-        f"{'Code':<5} {'Name':<9} "
+        f"{'Code':<4} {'Name':<10} "
         f"{'LC':>6} {'MA20':>6} {'MA50':>6} {'MA100':>6} {'MA200':>6} "
-        f"{'Chg%':>6} {'SD20':>6} {'Z-SD':>6} {'ATR20':>6} {'Z-ATR':>6} {'RSI14':>6} {'D1Y%':>6} {'D5Y%':>6}"
+        f"{'Chg%':>5} {'SD20':>6} {'Z-SD':>5} {'ATR20':>6} {'Z-ATR':>5} {'RSI14':>5} {'D1Y%':>5} {'D5Y%':>5}"
     )
     print(header)
     print("-" * len(header))
 
     for r in filtered:
         print(
-            f"{r['Symbol']:<5} "
-            f"{(r['Name'] or '')[:9]:<9} "
+            f"{r['Symbol']:<4} "
+            f"{(r['Name'] or '')[:10]:<10} "
             f"{fmtf(r['LC'],    6, 3)} "
             f"{fmtf(r['MA20'],  6, 3)} "
             f"{fmtf(r['MA50'],  6, 3)} "
             f"{fmtf(r['MA100'], 6, 3)} "
             f"{fmtf(r['MA200'], 6, 3)} "
-            f"{fmtf(r['Delta%'], 6, 2)} "
+            f"{fmtf(r['Delta%'], 5, 2)} "
             f"{fmtf(r['STD20'],  6, 3)} "
-            f"{fmtf(r['Z-STD'],  6, 2)} "
+            f"{fmtf(r['Z-STD'],  5, 2)} "
             f"{fmtf(r['ATR20'],  6, 3)} "
-            f"{fmtf(r['Z-ATR'],  6, 2)} "
-            f"{fmtf(r['RSI14'],  6, 2)} "
-            f"{fmtf(r['DivYield1Y'], 6, 2)} "
-            f"{fmtf(r['DivYield5Y'], 6, 2)}"
+            f"{fmtf(r['Z-ATR'],  5, 2)} "
+            f"{fmtf(r['RSI14'],  5, 2)} "
+            f"{fmtf(r['DivYield1Y'], 5, 2)} "
+            f"{fmtf(r['DivYield5Y'], 5, 2)}"
         )
 
 if __name__ == "__main__":
