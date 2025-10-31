@@ -7,19 +7,20 @@ Scan SGX tickers on Yahoo (.SI) and compute:
 - MA20 / MA50 / MA100 / MA200
 - STD20 (std dev of last 20 closes)
 - Z-STD = (LC - MA20) / STD20
-- ATR20  (Average True Range over last 20 days)
-- Z-ATR = (LC - MA20) / ATR20
+- ATR14  (Average True Range over last 14 days)
+- Z-ATR = (LC - MA20) / ATR14
 - RSI14 (Wilder)
 - DivYield1Y (Yahoo trailingAnnualDividendYield/dividendYield)
 - DivYield5Y (Yahoo fiveYearAvgDividendYield)
 
 Usage example:
-  python scan_sgx.py --symbols CC3 G13 N2IU C6L --delta_thres 3 --div_thres 4
+  python scan_sgx.py --symbols CC3 G13 N2IU C6L --delta_thres 1 --div_thres 3 --z_thres 1
 
 Notes:
 - --symbols takes space-separated SGX codes (no quotes), with or without the ".SI" suffix.
 - --delta_thres filters to drops only (Delta% <= -delta_thres); omit to show all.
-- --div_thres keeps only rows where max(DivYield1Y, DivYield5Y) >= div_thres.
+- --div_thres keeps only rows where Div1Y >= div_thres (independent of Div5Y).
+- --z_thres keeps only rows where Z-STD <= -z_thres.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ from collections import Counter
 from tqdm import tqdm
 
 # ========== USER INPUT ==========
-DEFAULT_SYMBOLS = "[A17U 9CI C38U C09 D01 D05 BUOU G13 H78 J36 BN4 AJBU ME8U M44U N2IU O39 S58 U96 C6L S68 S63 Z74 Y92 U11 U14 V03 F34 C52 C07 S41]"
+DEFAULT_SYMBOLS = "[HTCD HBBD HCCD HBND HSHD HPCD HXXD HPAD HYDD D05 HSMD HMTD TDED O39 Z74 Z77 HJDD U11 HPPD K6S TADD S63 J36 Q0F TATD NIO C6L S68 F34 C38U H78 BN4 TPED TKKD TCPD A17U 9CI BS6 SO7 Y92 C07 U96 G13 IICD N2IU G07 5E2 U14 M44U C09 ME8U D01 AJBU EMI M04 T14 S58 J69U U06 V03 K71U TQ5 T82U S59 CJLU VC2 BUOU YF8 HMN E5H OV8 H02 C52 AIY A7RU EB5 C2PU S07 H15 U10 P8Z P7VU F17 NS8U 9A4U F99 CC3 8C8U TS0U BSL OYY BVA H22 JYEU CY6U A50 H13 AU8U Z25 NTDU AGS P40U SET F03 AP4 Q5T OU8 S41 ADN P15 O5RU G92 BEC W05 B61 J85 S61 558 S08 EH5 LJ3 T6I F9D CRPU P52 DCRU S20 STG U9E CHZ NC2 H07 RE4 QES E3B E28 BWM P9D O10 H30 AW9U B58 WJP C41 AWX V5Q 544 F83 T15 Q01 H18 8AZ S56 TSH P34 5JS M1GU QC7 U13 5TP 1D0 BHK F1E MZH BBW MV4 M01 5UF T24 5UX DHLU PCT 5IG ODBU B28 8U7U UD1U 5WJ S35 5GD Y03 MXNU 41O OXMU BN2 HQU NPW BDX S85 N02 5LY BTE JLB 5CF CMOU AWZ CLN TCU S3N 500 BTM 1MZ QNS ZKX KUO 5JK H12 5DD A30 DU4 G20 5VS ER0 BMGU 5WH J2T 5HV DM0 40T C33 HLS A04 X5N AWI Z59 XZL 5IC S7OU I07 BQM BQF BTOU BEW XJB L19 D03 42R 564 LVR M14 MR7 5ML RXS BTG T13 G0I A31 BLS T12 G50 5DP 579 C9Q 1L2 S23 L02 BPF F86 OAJ S19 5WA 1F2 Q0X PPC K75 WPC L38 S44 WKS BIP 1J5 5SO D5IU BTP BQD U77 N08 1J4 BCY 5MZ V7R 1E3 YYR YYY 41B Y35 NR7 O9E 42E BDR B69 40V 5SR URR 595 533 42L 566 RQ1 BNE ZB9 42C BKA BHU 5AE T41 B49 F13 5DM D8DU 546 BEZ S69 ZXY 42T C06 YK9 BBP 1D1 GEH 5WF KJ5 5G2 8K7 I49 T55 K29 M05 5DS C8R 1AZ 42W Y3D NEX 1Y1 A55 1B1 5I1 BKX 5UL 569 BEI S29 FQ7 53W S9B BIX 1F3 5EG LMS T43 C05 N01 AYN C76 9G2 1A1 O08 AWG 8YY I06 5PC 5GZ UIX 43A BFI L23 5TT N0Z 42F CHJ R14 P8A 5HH 541 5F7 YYN 554 BTJ 596 DRX LS9 1R6 Y8E 1V3 C13 VIN BQC SGR 5NV BQN CIN 5PD 5AB CNE OTX E27 BXE NPL AVX 532 5OI A33 GRQ 43B FRQ BKW 540 BFU 5KI 1H8 43Q BDU P36 5NF S71 C04 594 AOF K03 MIJ 505 543 AAJ 5AU CTO 5GI 5SY BQP OTS AJ2 5AL 1D4 XHV BAZ 1B0 A52 BJZ BCV VI2 AWC BRD BTX 5RA BJV 5AI KUX TVV E6R 5BI BFT 43E 42N 40W 5G1 MF6 5WV 5VP 5EV N32 504 1D5 CEDU 5FW 5VC PRH 570 5PF H20 1B6 TWL BHD BLZ 49B 5EB BFK 1H2 5DO SEJ ENV 5EF AZA F10 5G9 41F 5HG 583 5TJ 584 5IF BKZ QS9 BCZ M15 SES QZG OMK P74 J03 9QX 581 40N WJ9 5F4 5QY 5EW 5RC XCF YYB 9I7 NHD GU5 Y06 M03 V3M V8Y AWV 5OX 1D3 5UA 5G4 BLR 580 BAI BLU 43F 5FX AWK 585 5DX BKK 5CR I11 41T 8A1 KUH M11 1F0 CYW 5OR 1F1 BAC V2Y 5RE BKV 42Z 9VW LYY BEH E9L AWM AYV Z4D BJD]"
 # ================================
 
 # Yahoo endpoints
@@ -161,7 +162,7 @@ def try_quote_names(symbols_si):
 def try_search_name(symbol_si):
     try:
         p = http_get_json(YF_SEARCH_URL.format(symbol=symbol_si))
-        quotes = p.get("quotes", [])
+        quotes = p.get("quotes", []) or []
         if quotes:
             return quotes[0].get("shortname") or quotes[0].get("longname") or symbol_si
     except Exception:
@@ -210,8 +211,8 @@ def ma_last(closes_valid, n):
     window = closes_valid[-n:]
     return mean(window)
 
-def compute_atr20(highs, lows, closes):
-    """ATR(20) with True Range computed from H/L/PrevClose; ignores None rows."""
+def compute_atr14(highs, lows, closes):
+    """ATR(14) with True Range computed from H/L/PrevClose; ignores None rows."""
     tr_list = []
     prev_close = None
     N = max(len(highs), len(lows), len(closes))
@@ -229,8 +230,8 @@ def compute_atr20(highs, lows, closes):
         if isinstance(tr, (int, float)) and math.isfinite(tr):
             tr_list.append(tr)
         prev_close = c if c is not None else prev_close
-    last20 = tr_list[-20:] if len(tr_list) >= 20 else tr_list
-    return mean(last20)
+    last14 = tr_list[-14:] if len(tr_list) >= 14 else tr_list
+    return mean(last14)
 
 def rsi_wilder_14(closes):
     """Wilder's RSI(14); returns NaN if insufficient data."""
@@ -335,7 +336,9 @@ def main():
     ap.add_argument("--delta_thres", type=float, default=None,
                     help="Only show drops with Delta%% <= -delta_thres (e.g., 3 -> show <= -3%%).")
     ap.add_argument("--div_thres", type=float, default=None,
-                    help="Keep only rows where max(DivYield1Y, DivYield5Y) >= div_thres.")
+                    help="Keep only rows where Div1Y >= div_thres.")
+    ap.add_argument("--z_thres", type=float, default=None,
+                    help="Keep only rows where Z-STD <= -z_thres (e.g., 1.2 -> show <= -1.2).")
     ap.add_argument("--sleep", type=float, default=0.3, help="Seconds to sleep between requests.")
     args = ap.parse_args()
 
@@ -379,7 +382,7 @@ def main():
 
             latest = latest_non_none(closes)
             std20  = std_pop(closes_valid[-20:]) if len(closes_valid) >= 1 else float("nan")
-            atr20  = compute_atr20(highs, lows, closes)
+            atr14  = compute_atr14(highs, lows, closes)
             rsi14  = rsi_wilder_14(closes)
 
             if is_finite(ma20) and ma20 != 0:
@@ -388,7 +391,7 @@ def main():
                 delta_pct = float("nan")
 
             z_std = ((latest - ma20) / std20) if (is_finite(latest) and is_finite(ma20) and is_finite(std20) and std20 != 0) else float("nan")
-            z_atr = ((latest - ma20) / atr20) if (is_finite(latest) and is_finite(ma20) and is_finite(atr20) and atr20 != 0) else float("nan")
+            z_atr = ((latest - ma20) / atr14) if (is_finite(latest) and is_finite(ma20) and is_finite(atr14) and atr14 != 0) else float("nan")
 
             dy1, dy5 = fetch_div_yields(sym)
 
@@ -403,7 +406,7 @@ def main():
                 "Delta%": delta_pct,
                 "STD20": std20,
                 "Z-STD": z_std,
-                "ATR20": atr20,
+                "ATR14": atr14,
                 "Z-ATR": z_atr,
                 "RSI14": rsi14,
                 "DivYield1Y": dy1,
@@ -425,16 +428,15 @@ def main():
         applied.append(f"Delta% ≤ -{thr:.2f}%")
     if args.div_thres is not None:
         dv = float(args.div_thres)
-        def keep_div(r):
+        def keep_div1y(r):
             d1 = r.get("DivYield1Y", float("nan"))
-            d5 = r.get("DivYield5Y", float("nan"))
-            has_any = is_finite(d1) or is_finite(d5)
-            if not has_any:
-                return False
-            mx = max([x for x in (d1, d5) if is_finite(x)], default=float("-inf"))
-            return mx >= dv
-        filtered = [r for r in filtered if keep_div(r)]
-        applied.append(f"max(Div1Y,Div5Y) ≥ {dv:.2f}%")
+            return is_finite(d1) and (d1 >= dv)
+        filtered = [r for r in filtered if keep_div1y(r)]
+        applied.append(f"Div1Y ≥ {dv:.2f}%")
+    if args.z_thres is not None:
+        zt = float(abs(args.z_thres))
+        filtered = [r for r in filtered if is_finite(r.get("Z-STD")) and r["Z-STD"] <= -zt]
+        applied.append(f"Z-STD ≤ -{zt:.2f}")
 
     # Sort by increasing Delta%
     def sort_key(r):
@@ -453,7 +455,7 @@ def main():
     header = (
         f"{'Code':<4} {'Name':<9} "
         f"{'LC':>6} {'MA20':>6} {'MA50':>6} {'MA100':>6} {'MA200':>6} "
-        f"{'Chg%':>5} {'SD20':>6} {'Z-SD':>5} {'ATR20':>6} {'Z-ATR':>5} {'RSI14':>5} {'D1Y%':>5} {'D5Y%':>5}"
+        f"{'Chg%':>5} {'SD20':>6} {'Z-SD':>5} {'ATR14':>6} {'Z-ATR':>5} {'RSI14':>5} {'D1Y%':>5} {'D5Y%':>5}"
     )
     print(header)
     print("-" * len(header))
@@ -462,20 +464,37 @@ def main():
         print(
             f"{r['Symbol']:<4} "
             f"{(r['Name'] or '')[:9]:<9} "
-            f"{fmtf(r['LC'],    6, 3)} "
-            f"{fmtf(r['MA20'],  6, 3)} "
-            f"{fmtf(r['MA50'],  6, 3)} "
-            f"{fmtf(r['MA100'], 6, 3)} "
-            f"{fmtf(r['MA200'], 6, 3)} "
+            f"{fmtf(r['LC'],     6, 3)} "
+            f"{fmtf(r['MA20'],   6, 3)} "
+            f"{fmtf(r['MA50'],   6, 3)} "
+            f"{fmtf(r['MA100'],  6, 3)} "
+            f"{fmtf(r['MA200'],  6, 3)} "
             f"{fmtf(r['Delta%'], 5, 2)} "
             f"{fmtf(r['STD20'],  6, 3)} "
             f"{fmtf(r['Z-STD'],  5, 2)} "
-            f"{fmtf(r['ATR20'],  6, 3)} "
+            f"{fmtf(r['ATR14'],  6, 3)} "
             f"{fmtf(r['Z-ATR'],  5, 2)} "
             f"{fmtf(r['RSI14'],  5, 2)} "
             f"{fmtf(r['DivYield1Y'], 5, 2)} "
             f"{fmtf(r['DivYield5Y'], 5, 2)}"
         )
+
+        # Five-metric ordering line: largest → smallest
+        metrics = [
+            ("MA50", r.get("MA50")),
+            ("MA20", r.get("MA20")),
+            ("MA200", r.get("MA200")),
+            ("MA100", r.get("MA100")),
+            ("LC", r.get("LC")),
+        ]
+
+        def order_key_desc(item):
+            val = item[1]
+            return (0, -val) if is_finite(val) else (1, float("inf"))
+
+        ordered = sorted(metrics, key=order_key_desc)
+        ordering_str = " > ".join([m[0] for m in ordered])
+        print(f"({ordering_str})")
 
 if __name__ == "__main__":
     main()
