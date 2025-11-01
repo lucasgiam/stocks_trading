@@ -3,24 +3,25 @@ scan_sgx.py
 
 Scan SGX tickers on Yahoo (.SI) and compute:
 - LC (latest close)
-- Delta% = 100 * (LC - MA20) / MA20
+- Chg% = 100 * (LC - MA20) / MA20
 - MA20 / MA50 / MA100 / MA200
-- STD20 (std dev of last 20 closes)
-- Z-STD = (LC - MA20) / STD20
+- SD20 (std dev of last 20 closes)
+- Z-SD = (LC - MA20) / SD20
 - ATR14  (Average True Range over last 14 days)
 - Z-ATR = (LC - MA20) / ATR14
 - RSI14 (Wilder)
-- DivYield1Y (Yahoo trailingAnnualDividendYield/dividendYield)
-- DivYield5Y (Yahoo fiveYearAvgDividendYield)
+- D1Y% (Dividend yield based on past year)
+- D5y% (Dividend yield based on past 5 years average)
 
 Usage example:
-  python scan_sgx.py --symbols CC3 G13 N2IU C6L --delta_thres 1 --div_thres 3 --z_thres 1
+  python scan_sgx.py --symbols CC3 G13 N2IU C6L --delta_thres z --div_thres 3 --z_thres -1
 
 Notes:
 - --symbols takes space-separated SGX codes (no quotes), with or without the ".SI" suffix.
-- --delta_thres filters to drops only (Delta% <= -delta_thres); omit to show all.
+- --delta_thres applies directly with its sign: Delta% must be <= delta_thres.
+  Set to 'z' to use Delta% <= z_thres (also respecting its sign).
 - --div_thres keeps only rows where Div1Y >= div_thres (independent of Div5Y).
-- --z_thres keeps only rows where Z-STD <= -z_thres.
+- --z_thres applies directly with its sign: Z-SD must be <= z_thres.
 """
 
 from __future__ import annotations
@@ -333,12 +334,13 @@ def fmtf(x, w, p):
 def main():
     ap = argparse.ArgumentParser(description="Scan SGX stocks (Yahoo) and rank by Delta% vs MA20.")
     ap.add_argument("--symbols", nargs="+", help="Space-separated SGX codes (e.g., CC3 G13 N2IU C6L). '.SI' optional.")
-    ap.add_argument("--delta_thres", type=float, default=None,
-                    help="Only show drops with Delta%% <= -delta_thres (e.g., 3 -> show <= -3%%).")
+    # Accept float (as string) or the string 'z'
+    ap.add_argument("--delta_thres", default=None,
+                    help="Delta%% filter uses the exact value/sign you pass (Delta%% ≤ value). Use 'z' to apply Delta%% ≤ z_thres.")
     ap.add_argument("--div_thres", type=float, default=None,
                     help="Keep only rows where Div1Y >= div_thres.")
     ap.add_argument("--z_thres", type=float, default=None,
-                    help="Keep only rows where Z-STD <= -z_thres (e.g., 1.2 -> show <= -1.2).")
+                    help="Z-SD filter uses the exact value/sign you pass (Z-SD ≤ value).")
     ap.add_argument("--sleep", type=float, default=0.3, help="Seconds to sleep between requests.")
     args = ap.parse_args()
 
@@ -423,9 +425,18 @@ def main():
     # Apply optional filters
     applied = []
     if args.delta_thres is not None:
-        thr = float(abs(args.delta_thres))
-        filtered = [r for r in filtered if r["Delta%"] <= -thr]
-        applied.append(f"Delta% ≤ -{thr:.2f}%")
+        # 'z' mode: use provided z_thres (respecting its sign) to filter Delta%
+        if isinstance(args.delta_thres, str) and args.delta_thres.lower() == "z":
+            if args.z_thres is not None:
+                zt = float(args.z_thres)
+                filtered = [r for r in filtered if r["Delta%"] <= zt]
+                applied.append(f"Delta% ≤ {zt:.2f} (from z_thres)")
+            else:
+                print("[WARN] --delta_thres z specified but --z_thres not provided; skipping Delta% filter.", file=sys.stderr)
+        else:
+            thr = float(args.delta_thres)
+            filtered = [r for r in filtered if r["Delta%"] <= thr]
+            applied.append(f"Delta% ≤ {thr:.2f}%")
     if args.div_thres is not None:
         dv = float(args.div_thres)
         def keep_div1y(r):
@@ -434,9 +445,9 @@ def main():
         filtered = [r for r in filtered if keep_div1y(r)]
         applied.append(f"Div1Y ≥ {dv:.2f}%")
     if args.z_thres is not None:
-        zt = float(abs(args.z_thres))
-        filtered = [r for r in filtered if is_finite(r.get("Z-STD")) and r["Z-STD"] <= -zt]
-        applied.append(f"Z-STD ≤ -{zt:.2f}")
+        zt = float(args.z_thres)
+        filtered = [r for r in filtered if is_finite(r.get("Z-STD")) and r["Z-STD"] <= zt]
+        applied.append(f"Z-SD ≤ {zt:.2f}")
 
     # Sort by increasing Delta%
     def sort_key(r):
