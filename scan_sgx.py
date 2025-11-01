@@ -19,7 +19,7 @@ Usage example:
 Notes:
 - --symbols takes space-separated SGX codes (no quotes), with or without the ".SI" suffix.
 - --delta_thres applies directly with its sign: Delta% must be <= delta_thres.
-  Set to 'z' to use Delta% <= z_thres (also respecting its sign).
+  Set to 'z' to use Delta% ≤ that record's Z-SD (per-record).
 - --div_thres keeps only rows where Div1Y >= div_thres (independent of Div5Y).
 - --z_thres applies directly with its sign: Z-SD must be <= z_thres.
 """
@@ -336,7 +336,7 @@ def main():
     ap.add_argument("--symbols", nargs="+", help="Space-separated SGX codes (e.g., CC3 G13 N2IU C6L). '.SI' optional.")
     # Accept float (as string) or the string 'z'
     ap.add_argument("--delta_thres", default=None,
-                    help="Delta%% filter uses the exact value/sign you pass (Delta%% ≤ value). Use 'z' to apply Delta%% ≤ z_thres.")
+                    help="Delta%% filter uses the exact value/sign you pass (Delta%% ≤ value). Use 'z' to apply per-record Delta%% ≤ Z-SD.")
     ap.add_argument("--div_thres", type=float, default=None,
                     help="Keep only rows where Div1Y >= div_thres.")
     ap.add_argument("--z_thres", type=float, default=None,
@@ -425,14 +425,13 @@ def main():
     # Apply optional filters
     applied = []
     if args.delta_thres is not None:
-        # 'z' mode: use provided z_thres (respecting its sign) to filter Delta%
+        # 'z' mode: keep rows where Delta% ≤ that record's Z-SD (per-record)
         if isinstance(args.delta_thres, str) and args.delta_thres.lower() == "z":
-            if args.z_thres is not None:
-                zt = float(args.z_thres)
-                filtered = [r for r in filtered if r["Delta%"] <= zt]
-                applied.append(f"Delta% ≤ {zt:.2f} (from z_thres)")
-            else:
-                print("[WARN] --delta_thres z specified but --z_thres not provided; skipping Delta% filter.", file=sys.stderr)
+            filtered = [
+                r for r in filtered
+                if is_finite(r.get("Z-STD")) and r["Delta%"] <= r["Z-STD"]
+            ]
+            applied.append("Delta% ≤ Z-SD (per-record)")
         else:
             thr = float(args.delta_thres)
             filtered = [r for r in filtered if r["Delta%"] <= thr]
