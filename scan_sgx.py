@@ -3,13 +3,15 @@ scan_sgx.py
 
 Scan SGX tickers on Yahoo (.SI) and compute:
 - LC (latest close)
-- Chg% = 100 * (LC - MA20) / MA20
+- Delta% = 100 * (LC - MA20) / MA20
 - MA20 / MA50 / MA100 / MA200
 - SD20 (std dev of last 20 closes)
 - Z-SD = (LC - MA20) / SD20
 - ATR14  (Average True Range over last 14 days)
 - Z-ATR = (LC - MA20) / ATR14
 - RSI14 (Wilder)
+- ΔRSI/D (linear regression slope of past 5 RSI14 values)
+- R-sq% (R squared value of linear regression fit)
 - D1Y% (Dividend yield based on past year)
 - D5y% (Dividend yield based on past 5 years average)
 
@@ -264,6 +266,62 @@ def rsi_wilder_14(closes):
     rs = avg_gain / avg_loss
     return 100.0 - (100.0 / (1.0 + rs))
 
+# ---- RSI(14) full series + slope & R^2 helpers ----
+def rsi_wilder_series(closes, period=14):
+    """Return list of RSI(period) values for the cleaned close series (None removed)."""
+    cleaned = [c for c in closes if c is not None]
+    if len(cleaned) < period + 1:
+        return []
+    diffs = [cleaned[i] - cleaned[i - 1] for i in range(1, len(cleaned))]
+    gains = [max(d, 0.0) for d in diffs]
+    losses = [max(-d, 0.0) for d in diffs]
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    rsi_vals = []
+    # first RSI after initial averages (at index `period`)
+    if avg_loss == 0:
+        rsi_vals.append(100.0 if avg_gain > 0 else 50.0)
+    else:
+        rs = avg_gain / avg_loss
+        rsi_vals.append(100.0 - (100.0 / (1.0 + rs)))
+
+    for i in range(period, len(diffs)):
+        g = gains[i]
+        l = losses[i]
+        avg_gain = (avg_gain * (period - 1) + g) / period
+        avg_loss = (avg_loss * (period - 1) + l) / period
+        if avg_loss == 0:
+            rsi = 100.0 if avg_gain > 0 else 50.0
+        else:
+            rs = avg_gain / avg_loss
+            rsi = 100.0 - (100.0 / (1.0 + rs))
+        rsi_vals.append(rsi)
+
+    return rsi_vals
+
+def linreg_slope_r2(y_vals):
+    """Given y over equally spaced x=0..n-1, return (slope per day, R^2 as percent 0-100)."""
+    n = len(y_vals)
+    if n < 2:
+        return (float("nan"), float("nan"))
+    x_vals = list(range(n))
+    mx = sum(x_vals) / n
+    my = sum(y_vals) / n
+    cov = sum((x - mx) * (y - my) for x, y in zip(x_vals, y_vals))
+    var_x = sum((x - mx) ** 2 for x in x_vals)
+    var_y = sum((y - my) ** 2 for y in y_vals)
+    if var_x == 0:
+        return (float("nan"), float("nan"))
+    slope = cov / var_x
+    if var_x == 0 or var_y == 0:
+        r2_pct = float("nan")
+    else:
+        r = cov / math.sqrt(var_x * var_y)
+        r2_pct = (r * r) * 100.0
+    return (slope, r2_pct)
+
 def latest_non_none(arr):
     for x in reversed(arr):
         if x is not None:
@@ -387,6 +445,14 @@ def main():
             atr14  = compute_atr14(highs, lows, closes)
             rsi14  = rsi_wilder_14(closes)
 
+            # ---- RSI/T (slope) and R-sq over last 5 RSI14 values ----
+            rsi_series = rsi_wilder_series(closes, period=14)
+            if len(rsi_series) >= 5:
+                last5 = rsi_series[-5:]  # oldest→newest by construction
+                rsi_t, r_sq_pct = linreg_slope_r2(last5)
+            else:
+                rsi_t, r_sq_pct = (float("nan"), float("nan"))
+
             if is_finite(ma20) and ma20 != 0:
                 delta_pct = 100.0 * (latest - ma20) / ma20
             else:
@@ -411,6 +477,8 @@ def main():
                 "ATR14": atr14,
                 "Z-ATR": z_atr,
                 "RSI14": rsi14,
+                "RSI/T": rsi_t,
+                "R-sq": r_sq_pct, 
                 "DivYield1Y": dy1,
                 "DivYield5Y": dy5,
             })
@@ -465,7 +533,8 @@ def main():
     header = (
         f"{'Code':<4} {'Name':<9} "
         f"{'LC':>6} {'MA20':>6} {'MA50':>6} {'MA100':>6} {'MA200':>6} "
-        f"{'Chg%':>5} {'SD20':>6} {'Z-SD':>5} {'ATR14':>6} {'Z-ATR':>5} {'RSI14':>5} {'D1Y%':>5} {'D5Y%':>5}"
+        f"{'Delta%':>5} {'SD20':>6} {'Z-SD':>5} {'ATR14':>6} {'Z-ATR':>5} "
+        f"{'RSI14':>5} {'ΔRSI/D':>5} {'R-sq%':>5} {'D1Y%':>5} {'D5Y%':>5}"
     )
     print(header)
     print("-" * len(header))
@@ -485,6 +554,8 @@ def main():
             f"{fmtf(r['ATR14'],  6, 3)} "
             f"{fmtf(r['Z-ATR'],  5, 2)} "
             f"{fmtf(r['RSI14'],  5, 2)} "
+            f"{fmtf(r['RSI/T'],  5, 2)} "
+            f"{fmtf(r['R-sq'],   5, 2)} "
             f"{fmtf(r['DivYield1Y'], 5, 2)} "
             f"{fmtf(r['DivYield5Y'], 5, 2)}"
         )
