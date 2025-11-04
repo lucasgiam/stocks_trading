@@ -3,7 +3,7 @@ scan_sgx.py
 
 Scan SGX tickers on Yahoo (.SI) and compute:
 - LC (latest close)
-- Delta% = 100 * (LC - MA20) / MA20
+- ΔLC% = 100 * (LC - MA20) / MA20
 - MA20 / MA50 / MA100 / MA200
 - SD20 (std dev of last 20 closes)
 - Z-SD = (LC - MA20) / SD20
@@ -533,8 +533,8 @@ def main():
     header = (
         f"{'Code':<4} {'Name':<9} "
         f"{'LC':>6} {'MA20':>6} {'MA50':>6} {'MA100':>6} {'MA200':>6} "
-        f"{'Delta%':>5} {'SD20':>6} {'Z-SD':>5} {'ATR14':>6} {'Z-ATR':>5} "
-        f"{'RSI14':>5} {'ΔRSI/D':>5} {'R-sq%':>5} {'D1Y%':>5} {'D5Y%':>5}"
+        f"{'ΔLC%':>5} {'SD20':>6} {'Z-SD':>5} {'ATR14':>6} {'Z-ATR':>5} "
+        f"{'RSI14':>5} {'ΔR/D':>5} {'R-sq%':>5} {'D1Y%':>5} {'D5Y%':>5}"
     )
     print(header)
     print("-" * len(header))
