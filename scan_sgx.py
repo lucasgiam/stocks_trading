@@ -3,27 +3,28 @@ scan_sgx.py
 
 Scan SGX tickers on Yahoo (.SI) and compute:
 - LC (latest close)
+- MA20 (20-day moving average)
+- MA-4% = 0.96 * MA20
 - ΔLC% = 100 * (LC - MA20) / MA20
-- MA20 / MA50 / MA100 / MA200
 - SD20 (std dev of last 20 closes)
 - Z-SD = (LC - MA20) / SD20
-- ATR14  (Average True Range over last 14 days)
+- ATR14 (Average True Range over last 14 days)
 - Z-ATR = (LC - MA20) / ATR14
-- RSI14 (Wilder)
+- RSI14 (Wilder's Relative Strength Index over last 14 days)
 - ΔRSI/D (linear regression slope of past 5 RSI14 values)
 - R-sq% (R squared value of linear regression fit)
 - D1Y% (Dividend yield based on past year)
-- D5y% (Dividend yield based on past 5 years average)
+- D5Y% (Dividend yield based on past 5 years average)
 
 Usage example:
   python scan_sgx.py --symbols CC3 G13 N2IU C6L --delta_thres z --div_thres 3 --z_thres -1
 
 Notes:
 - --symbols takes space-separated SGX codes (no quotes), with or without the ".SI" suffix.
-- --delta_thres applies directly with its sign: Delta% must be <= delta_thres.
-  Set to 'z' to use Delta% ≤ that record's Z-SD (per-record).
+- --delta_thres applies directly with its sign: Delta% must be <= delta_thres, set to 'z' to use Delta% ≤ that record's Z-SD (per-record).
 - --div_thres keeps only rows where Div1Y >= div_thres (independent of Div5Y).
 - --z_thres applies directly with its sign: Z-SD must be <= z_thres.
+- --exclude removes the specified symbols from being processed
 """
 
 from __future__ import annotations
@@ -400,6 +401,7 @@ def main():
     ap.add_argument("--z_thres", type=float, default=None,
                     help="Z-SD filter uses the exact value/sign you pass (Z-SD ≤ value).")
     ap.add_argument("--sleep", type=float, default=0.3, help="Seconds to sleep between requests.")
+    ap.add_argument("--exclude", nargs="+", help="Space-separated SGX codes to exclude ('.SI' optional).")
     args = ap.parse_args()
 
     input_symbols = args.symbols if args.symbols else parse_symbols_string(DEFAULT_SYMBOLS)
@@ -407,13 +409,16 @@ def main():
         print("ERROR: No symbols provided via --symbols and DEFAULT_SYMBOLS is empty.")
         return
 
+    exclude_symbols = args.exclude if args.exclude else []
+    exclude_normalized = {ensure_si(s) for s in exclude_symbols}
+
     normalized_symbols = [ensure_si(s) for s in input_symbols]
     counts = Counter(normalized_symbols)
     duplicates = [f"{sym} (x{counts[sym]})" for sym in counts if counts[sym] > 1]
     if duplicates:
         print("[WARN] Duplicate stock codes detected (will be de-duplicated): " + ", ".join(duplicates))
 
-    symbols_si = list(dict.fromkeys(normalized_symbols))
+    symbols_si = [sym for sym in dict.fromkeys(normalized_symbols) if sym not in exclude_normalized]
 
     print("[INFO] Fetching scanning data...")
     try:
@@ -436,9 +441,6 @@ def main():
                 raise ValueError("No close prices in 1Y history")
 
             ma20  = ma_last(closes_valid, 20)
-            ma50  = ma_last(closes_valid, 50)
-            ma100 = ma_last(closes_valid, 100)
-            ma200 = ma_last(closes_valid, 200)
 
             latest = latest_non_none(closes)
             std20  = std_pop(closes_valid[-20:]) if len(closes_valid) >= 1 else float("nan")
@@ -462,15 +464,14 @@ def main():
             z_atr = ((latest - ma20) / atr14) if (is_finite(latest) and is_finite(ma20) and is_finite(atr14) and atr14 != 0) else float("nan")
 
             dy1, dy5 = fetch_div_yields(sym)
+            ma20_m4 = ma20 * 0.96 if is_finite(ma20) else float("nan")
 
             results.append({
                 "Symbol": sym.removesuffix(".SI"),
                 "Name": name_map.get(sym, sym),
                 "LC": latest,
                 "MA20": ma20,
-                "MA50": ma50,
-                "MA100": ma100,
-                "MA200": ma200,
+                "MA20m4": ma20_m4,
                 "Delta%": delta_pct,
                 "STD20": std20,
                 "Z-STD": z_std,
@@ -478,7 +479,7 @@ def main():
                 "Z-ATR": z_atr,
                 "RSI14": rsi14,
                 "RSI/T": rsi_t,
-                "R-sq": r_sq_pct, 
+                "R-sq": r_sq_pct,
                 "DivYield1Y": dy1,
                 "DivYield5Y": dy5,
             })
@@ -532,9 +533,9 @@ def main():
     # ===== One-row compact table (short labels & widths) =====
     header = (
         f"{'Code':<4} {'Name':<9} "
-        f"{'LC':>6} {'MA20':>6} {'MA50':>6} {'MA100':>6} {'MA200':>6} "
-        f"{'ΔLC%':>5} {'SD20':>6} {'Z-SD':>5} {'ATR14':>6} {'Z-ATR':>5} "
-        f"{'RSI14':>5} {'ΔR/D':>5} {'R-sq%':>5} {'D1Y%':>5} {'D5Y%':>5}"
+        f"{'LC':>6} {'MA20':>6} {'MA-4%':>6} "
+        f"{'ΔLC%':>6} {'SD20':>6} {'Z-SD':>5} {'ATR14':>6} {'Z-ATR':>5} "
+        f"{'RSI14':>5} {'ΔRSI/D':>6} {'R-sq%':>5} {'D1Y%':>5} {'D5Y%':>5}"
     )
     print(header)
     print("-" * len(header))
@@ -543,39 +544,20 @@ def main():
         print(
             f"{r['Symbol']:<4} "
             f"{(r['Name'] or '')[:9]:<9} "
-            f"{fmtf(r['LC'],     6, 3)} "
-            f"{fmtf(r['MA20'],   6, 3)} "
-            f"{fmtf(r['MA50'],   6, 3)} "
-            f"{fmtf(r['MA100'],  6, 3)} "
-            f"{fmtf(r['MA200'],  6, 3)} "
-            f"{fmtf(r['Delta%'], 5, 2)} "
-            f"{fmtf(r['STD20'],  6, 3)} "
-            f"{fmtf(r['Z-STD'],  5, 2)} "
-            f"{fmtf(r['ATR14'],  6, 3)} "
-            f"{fmtf(r['Z-ATR'],  5, 2)} "
-            f"{fmtf(r['RSI14'],  5, 2)} "
-            f"{fmtf(r['RSI/T'],  5, 2)} "
-            f"{fmtf(r['R-sq'],   5, 2)} "
+            f"{fmtf(r['LC'],       6, 3)} "
+            f"{fmtf(r['MA20'],     6, 3)} "
+            f"{fmtf(r['MA20m4'],   6, 3)} "
+            f"{fmtf(r['Delta%'],   6, 2)} "
+            f"{fmtf(r['STD20'],    6, 3)} "
+            f"{fmtf(r['Z-STD'],    5, 2)} "
+            f"{fmtf(r['ATR14'],    6, 3)} "
+            f"{fmtf(r['Z-ATR'],    5, 2)} "
+            f"{fmtf(r['RSI14'],    5, 2)} "
+            f"{fmtf(r['RSI/T'],    6, 2)} "
+            f"{fmtf(r['R-sq'],     5, 2)} "
             f"{fmtf(r['DivYield1Y'], 5, 2)} "
             f"{fmtf(r['DivYield5Y'], 5, 2)}"
         )
-
-        # Five-metric ordering line: largest → smallest
-        metrics = [
-            ("MA50", r.get("MA50")),
-            ("MA20", r.get("MA20")),
-            ("MA200", r.get("MA200")),
-            ("MA100", r.get("MA100")),
-            ("LC", r.get("LC")),
-        ]
-
-        def order_key_desc(item):
-            val = item[1]
-            return (0, -val) if is_finite(val) else (1, float("inf"))
-
-        ordered = sorted(metrics, key=order_key_desc)
-        ordering_str = " > ".join([m[0] for m in ordered])
-        print(f"({ordering_str})")
 
 if __name__ == "__main__":
     main()
