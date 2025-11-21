@@ -4,7 +4,7 @@ scan_sgx.py
 Scan SGX tickers on Yahoo (.SI) and compute:
 - LC (latest close)
 - MA20 (20-day moving average)
-- MA-4% = 0.96 * MA20
+- MA±X% = (1 + X/100) * MA20, where X = ma20_thres (default = -4)
 - ΔLC% = 100 * (LC - MA20) / MA20
 - SD20 (std dev of last 20 closes)
 - Z-SD = (LC - MA20) / SD20
@@ -24,6 +24,7 @@ Notes:
 - --delta_thres applies directly with its sign: Delta% must be <= delta_thres, set to 'z' to use Delta% ≤ that record's Z-SD (per-record).
 - --div_thres keeps only rows where Div1Y >= div_thres (independent of Div5Y).
 - --z_thres applies directly with its sign: Z-SD must be <= z_thres.
+- --ma20_thres controls the MA20 offset X (in %) used to compute MA±X%.
 - --exclude removes the specified symbols from being processed
 """
 
@@ -402,6 +403,8 @@ def main():
                     help="Z-SD filter uses the exact value/sign you pass (Z-SD ≤ value).")
     ap.add_argument("--sleep", type=float, default=0.3, help="Seconds to sleep between requests.")
     ap.add_argument("--exclude", nargs="+", help="Space-separated SGX codes to exclude ('.SI' optional).")
+    ap.add_argument("--ma20_thres", type=float, default=-4.0,
+                    help="Offset X in percent used to compute MA±X%% relative to MA20 (default -4).")
     args = ap.parse_args()
 
     input_symbols = args.symbols if args.symbols else parse_symbols_string(DEFAULT_SYMBOLS)
@@ -429,6 +432,8 @@ def main():
     name_map = get_name_map(symbols_si)
 
     results = []
+    ma20_factor = 1.0 + args.ma20_thres / 100.0
+
     for sym in tqdm(symbols_si, desc="Scanning", unit="stock"):
         try:
             chart = fetch_chart_1y(sym)
@@ -464,7 +469,7 @@ def main():
             z_atr = ((latest - ma20) / atr14) if (is_finite(latest) and is_finite(ma20) and is_finite(atr14) and atr14 != 0) else float("nan")
 
             dy1, dy5 = fetch_div_yields(sym)
-            ma20_m4 = ma20 * 0.96 if is_finite(ma20) else float("nan")
+            ma20_m4 = ma20 * ma20_factor if is_finite(ma20) else float("nan")
 
             results.append({
                 "Symbol": sym.removesuffix(".SI"),
@@ -531,9 +536,10 @@ def main():
     )
 
     # ===== One-row compact table (short labels & widths) =====
+    ma_label = f"MA{args.ma20_thres:+.0f}%"
     header = (
         f"{'Code':<4} {'Name':<9} "
-        f"{'LC':>6} {'MA20':>6} {'MA-4%':>6} "
+        f"{'LC':>6} {'MA20':>6} {ma_label:>6} "
         f"{'ΔLC%':>6} {'SD20':>6} {'Z-SD':>5} {'ATR14':>6} {'Z-ATR':>5} "
         f"{'RSI14':>5} {'ΔRSI/D':>6} {'R-sq%':>5} {'D1Y%':>5} {'D5Y%':>5}"
     )
