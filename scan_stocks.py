@@ -16,8 +16,8 @@ Scan SGX or US tickers on Yahoo and compute:
 - D5Y% (Dividend yield based on past 5 years average)
 
 Usage example:
-  python scan_stocks.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --div_thres 3 --z_thres 0
-  python scan_stocks.py --mode us --symbols AAPL GOOG MSFT --delta_thres 0
+  python scan_stocks.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --div_thres 3 --z_thres 0 --pct_thres -5 --z_thres -2
+  python scan_stocks.py --mode us --symbols AAPL GOOG MSFT NVDA --delta_thres 0 --z_thres 0 --pct_thres -5 --z_thres -2
 
 Notes:
 - --mode selects SGX ('sg') or US ('us') tickers. In 'sg' mode, tickers are mapped to Yahoo by appending '.SI'.
@@ -624,7 +624,7 @@ def main():
     pct_label = f"MA{args.pct_offset:+.0f}%"
     z_label = f"MA{args.z_offset:+.0f}SD"
     header = (
-        f"{'Code':<4} {'Name':<10} "
+        f"{'Code':<4} {'Name':<12} "
         f"{'LC':>7} {'MA20':>7} {pct_label:>7} {z_label:>7} "
         f"{'ΔLC%':>6} {'SD20':>6} {'Z-SD':>5} {'ATR14':>6} {'Z-ATR':>5} "
         f"{'RSI14':>5} {'D1Y%':>5} {'D5Y%':>5}"
@@ -635,7 +635,7 @@ def main():
     for r in filtered:
         print(
             f"{r['Symbol']:<4} "
-            f"{(r['Name'] or '')[:10]:<10} "
+            f"{(r['Name'] or '')[:12]:<12} "
             f"{fmtf(r['LC'],       7, 3)} "
             f"{fmtf(r['MA20'],     7, 3)} "
             f"{fmtf(r['MA20m4'],   7, 3)} "
