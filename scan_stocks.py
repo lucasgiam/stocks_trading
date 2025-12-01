@@ -525,9 +525,9 @@ def main():
 
     # ===== One-row compact table (short labels & widths) =====
     header = (
-        f"{'Code':<6} {'Name':<14} "
-        f"{'LC':>7} {'MA20':>7} {'MA50':>7} {'MA100':>7} {'MA200':>7} "
-        f"{'ΔLC%':>6} {'SD20':>6} {'ATR20':>6} {'Z-SD':>5} {'Z-ATR':>5} "
+        f"{'Code':<4} {'Name':<10} "
+        f"{'LC':>6} {'MA20':>6} {'MA50':>6} {'MA100':>6} {'MA200':>6} "
+        f"{'ΔLC%':>6} {'SD20':>5} {'ATR20':>5} {'Z-SD':>5} {'Z-ATR':>5} "
         f"{'SD%':>5} {'ATR%':>5}"
     )
     print(header)
@@ -535,16 +535,16 @@ def main():
 
     for r in filtered:
         print(
-            f"{(r['Symbol'] or '')[:6]:<6} "
-            f"{(r['Name'] or '')[:14]:<14} "
-            f"{fmt_price(r['LC'], 7)} "
-            f"{fmt_price(r['MA20'], 7)} "
-            f"{fmt_price(r['MA50'], 7)} "
-            f"{fmt_price(r['MA100'], 7)} "
-            f"{fmt_price(r['MA200'], 7)} "
+            f"{(r['Symbol'] or '')[:4]:<4} "
+            f"{(r['Name'] or '')[:10]:<10} "
+            f"{fmt_price(r['LC'], 6)} "
+            f"{fmt_price(r['MA20'], 6)} "
+            f"{fmt_price(r['MA50'], 6)} "
+            f"{fmt_price(r['MA100'], 6)} "
+            f"{fmt_price(r['MA200'], 6)} "
             f"{fmtf(r['Delta%'],    6, 2)} "
-            f"{fmt_price(r['STD20'], 6)} "
-            f"{fmt_price(r['ATR20'], 6)} "
+            f"{fmt_price(r['STD20'], 5)} "
+            f"{fmt_price(r['ATR20'], 5)} "
             f"{fmtf(r['Z-STD'],     5, 2)} "
             f"{fmtf(r['Z-ATR'],     5, 2)} "
             f"{fmtf(r['SD/LC%'],    5, 2)} "
