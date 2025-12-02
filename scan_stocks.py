@@ -9,16 +9,14 @@ Scan SGX, US, or crypto tickers on Yahoo and compute:
 - MA200 (200-day moving average)
 - ΔLC% = 100 * (LC - MA20) / MA20
 - SD20 (std dev of last 20 closes)
-- ATR20 (Average True Range over last 20 days)
 - Z-SD = (LC - MA20) / SD20
-- Z-ATR = (LC - MA20) / ATR20
-- SD% = 100 * SD20 / LC
+- ATR20 (Average True Range over last 20 days)
 - ATR% = 100 * ATR20 / LC
 
 Usage example:
-  python scan_stocks.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --z_thres 0
-  python scan_stocks.py --mode us --symbols AAPL GOOG MSFT NVDA --delta_thres 0 --z_thres 0
-  python scan_stocks.py --mode cc --symbols BTC ETH SOL --delta_thres 0 --z_thres 0
+  python scan_stocks.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --z_thres 0 --volt_thres 3
+  python scan_stocks.py --mode us --symbols AAPL GOOG MSFT NVDA --delta_thres 0 --z_thres 0 --volt_thres 3
+  python scan_stocks.py --mode cc --symbols BTC ETH SOL --delta_thres 0 --z_thres 0 --volt_thres 3
 
 Notes:
 - --mode selects:
@@ -28,6 +26,7 @@ Notes:
 - --symbols takes space-separated codes (no quotes).
 - --delta_thres applies directly with its sign: Delta% must be <= delta_thres, set to 'z' to use Delta% ≤ that record's Z-SD (per-record).
 - --z_thres applies directly with its sign: Z-SD must be <= z_thres.
+- --volt_thres keeps only rows where ATR% >= volt_thres.
 - --exclude removes the specified symbols from being processed (normalization by mode is applied).
 """
 
@@ -278,10 +277,11 @@ def is_finite(x):
 def fmtf(x, w, p):
     return f"{x:>{w}.{p}f}" if is_finite(x) else f"{'nan':>{w}}"
 
-def fmt_price(x, width=7, max_dp=3):
+
+def fmt_price(x, width=6, max_dp=3):
     if not is_finite(x):
         return f"{'nan':>{width}}"
-    # Try from 3 dp down to 0 dp, pick first that fits
+    # Try from max_dp down to 0 dp, pick first that fits
     for dp in range(max_dp, -1, -1):
         s = f"{x:.{dp}f}"
         if len(s) <= width:
@@ -291,7 +291,6 @@ def fmt_price(x, width=7, max_dp=3):
     if len(s) > width:
         s = s[:width]  # keep most significant digits
     return s.rjust(width)
-
 
 
 def main():
@@ -331,6 +330,12 @@ def main():
         type=float,
         default=None,
         help="Z-SD filter uses the exact value/sign you pass (Z-SD ≤ value).",
+    )
+    ap.add_argument(
+        "--volt_thres",
+        type=float,
+        default=None,
+        help="Keep only rows where ATR% (ATR20/LC) >= volt_thres.",
     )
     ap.add_argument(
         "--sleep",
@@ -429,21 +434,6 @@ def main():
                 )
                 else float("nan")
             )
-            z_atr = (
-                (latest - ma20) / atr20
-                if (
-                    is_finite(latest)
-                    and is_finite(ma20)
-                    and is_finite(atr20)
-                    and atr20 != 0
-                )
-                else float("nan")
-            )
-
-            if is_finite(std20) and is_finite(latest) and latest != 0:
-                sd_lc_pct = 100.0 * std20 / latest
-            else:
-                sd_lc_pct = float("nan")
 
             if is_finite(atr20) and is_finite(latest) and latest != 0:
                 atr_lc_pct = 100.0 * atr20 / latest
@@ -472,8 +462,6 @@ def main():
                     "STD20": std20,
                     "ATR20": atr20,
                     "Z-STD": z_std,
-                    "Z-ATR": z_atr,
-                    "SD/LC%": sd_lc_pct,
                     "ATR/LC%": atr_lc_pct,
                 }
             )
@@ -508,6 +496,15 @@ def main():
             if is_finite(r.get("Z-STD")) and r["Z-STD"] <= zt
         ]
         applied.append(f"Z-SD ≤ {zt:.2f}")
+    if args.volt_thres is not None:
+        vt = float(args.volt_thres)
+
+        def keep_volt(r):
+            v = r.get("ATR/LC%", float("nan"))
+            return is_finite(v) and (v >= vt)
+
+        filtered = [r for r in filtered if keep_volt(r)]
+        applied.append(f"ATR% ≥ {vt:.2f}%")
 
     # Sort by increasing Delta%
     def sort_key(r):
@@ -527,8 +524,8 @@ def main():
     header = (
         f"{'Code':<4} {'Name':<10} "
         f"{'LC':>6} {'MA20':>6} {'MA50':>6} {'MA100':>6} {'MA200':>6} "
-        f"{'ΔLC%':>6} {'SD20':>5} {'ATR20':>5} {'Z-SD':>5} {'Z-ATR':>5} "
-        f"{'SD%':>5} {'ATR%':>5}"
+        f"{'ΔLC%':>6} {'SD20':>5} {'Z-SD':>5} {'ATR20':>5} "
+        f"{'ATR%':>5}"
     )
     print(header)
     print("-" * len(header))
@@ -537,21 +534,19 @@ def main():
         print(
             f"{(r['Symbol'] or '')[:4]:<4} "
             f"{(r['Name'] or '')[:10]:<10} "
-            f"{fmt_price(r['LC'], 6)} "
-            f"{fmt_price(r['MA20'], 6)} "
-            f"{fmt_price(r['MA50'], 6)} "
-            f"{fmt_price(r['MA100'], 6)} "
-            f"{fmt_price(r['MA200'], 6)} "
-            f"{fmtf(r['Delta%'],    6, 2)} "
-            f"{fmt_price(r['STD20'], 5)} "
-            f"{fmt_price(r['ATR20'], 5)} "
-            f"{fmtf(r['Z-STD'],     5, 2)} "
-            f"{fmtf(r['Z-ATR'],     5, 2)} "
-            f"{fmtf(r['SD/LC%'],    5, 2)} "
-            f"{fmtf(r['ATR/LC%'],   5, 2)}"
+            f"{fmt_price(r['LC'],     6)} "
+            f"{fmt_price(r['MA20'],   6)} "
+            f"{fmt_price(r['MA50'],   6)} "
+            f"{fmt_price(r['MA100'],  6)} "
+            f"{fmt_price(r['MA200'],  6)} "
+            f"{fmtf(r['Delta%'],      6, 2)} "
+            f"{fmt_price(r['STD20'],  5)} "
+            f"{fmtf(r['Z-STD'],       5, 2)} "
+            f"{fmt_price(r['ATR20'],  5)} "
+            f"{fmtf(r['ATR/LC%'],     5, 2)}"
         )
 
-        # MA ordering stack: e.g. MA20 > LC > MA50 > MA100 > MA200
+        # MA ordering stack: e.g. (MA20 > LC > MA50 > MA100 > MA200)
         ma_stack_pairs = [
             ("MA20", r.get("MA20")),
             ("LC",   r.get("LC")),
