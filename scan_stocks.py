@@ -14,9 +14,9 @@ Scan SGX, US, or crypto tickers on Yahoo and compute:
 - ATR% = 100 * ATR20 / LC
 
 Usage example:
-  python scan_stocks.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --z_thres 0 --volt_thres 3
-  python scan_stocks.py --mode us --symbols AAPL GOOG MSFT NVDA --delta_thres 0 --z_thres 0 --volt_thres 3
-  python scan_stocks.py --mode cc --symbols BTC ETH SOL --delta_thres 0 --z_thres 0 --volt_thres 3
+  python scan_stocks.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --z_thres 0 --volt_thres 3 --sort_by delta
+  python scan_stocks.py --mode us --symbols AAPL GOOG MSFT NVDA --delta_thres 0 --z_thres 0 --volt_thres 3 --sort_by atr
+  python scan_stocks.py --mode cc --symbols BTC ETH SOL --delta_thres 0 --z_thres 0 --volt_thres 3 --sort_by z
 
 Notes:
 - --mode selects:
@@ -24,9 +24,20 @@ Notes:
     'us' for US stocks (codes like 'AAPL', 'GOOG'; used as-is),
     'cc' for cryptocurrencies (codes like 'BTC', 'ETH'; mapped to Yahoo by appending '-USD').
 - --symbols takes space-separated codes (no quotes), or 'auto' to load from all_<mode>_stocks.txt.
-- --delta_thres applies directly with its sign: Delta% must be <= delta_thres, set to 'z' to use Delta% ≤ that record's Z-SD (per-record).
-- --z_thres applies directly with its sign: Z-SD must be <= z_thres.
+- --delta_thres:
+    * if X <= 0, keep rows where Delta% <= X
+    * if X > 0, keep rows where Delta% > X
+    * or set to 'z' to use per-record Delta% ≤ that record's Z-val.
+- --z_thres:
+    * if X <= 0, keep rows where Z-val <= X
+    * if X > 0, keep rows where Z-val > X.
 - --volt_thres keeps only rows where ATR% >= volt_thres.
+- --sort_by controls sorting of the final table:
+    * 'delta': sort by ΔLC%; if delta_thres <= 0 or not specified → increasing (most negative first),
+               if delta_thres > 0 → decreasing (most positive first).
+    * 'z':     sort by Z-val; if z_thres <= 0 or not specified → increasing (most negative first),
+               if z_thres > 0 → decreasing (most positive first).
+    * 'atr':   sort by ATR% (ATR20/LC), always in decreasing order (largest first).
 - --exclude removes the specified symbols from being processed (normalization by mode is applied).
 """
 
@@ -321,21 +332,36 @@ def main():
         "--delta_thres",
         default=None,
         help=(
-            "Delta% filter uses the exact value/sign you pass (Delta% ≤ value). "
-            "Use 'z' to apply per-record Delta% ≤ Z-SD."
+            "Delta% filter: if X <= 0, keep rows with Delta% ≤ X; "
+            "if X > 0, keep rows with Delta% > X. "
+            "Use 'z' to apply per-record Delta% ≤ Z-val."
         ),
     )
     ap.add_argument(
         "--z_thres",
         type=float,
         default=None,
-        help="Z-SD filter uses the exact value/sign you pass (Z-SD ≤ value).",
+        help=(
+            "Z-val filter: if X <= 0, keep rows with Z-val ≤ X; "
+            "if X > 0, keep rows with Z-val > X."
+        ),
     )
     ap.add_argument(
         "--volt_thres",
         type=float,
         default=None,
         help="Keep only rows where ATR% (ATR20/LC) >= volt_thres.",
+    )
+    ap.add_argument(
+        "--sort_by",
+        choices=["delta", "atr", "z"],
+        default="delta",
+        help=(
+            "Sort output by: 'delta' (ΔLC%), 'atr' (ATR%), or 'z' (Z-val). "
+            "For 'delta' and 'z': if threshold X <= 0 or not set → increasing (most negative first); "
+            "if X > 0 → decreasing (most positive first). "
+            "For 'atr': always decreasing (largest ATR% first)."
+        ),
     )
     ap.add_argument(
         "--sleep",
@@ -504,26 +530,46 @@ def main():
     # Apply optional filters
     applied = []
     if args.delta_thres is not None:
-        # 'z' mode: keep rows where Delta% ≤ that record's Z-SD (per-record)
+        # 'z' mode: keep rows where Delta% ≤ that record's Z-val (per-record)
         if isinstance(args.delta_thres, str) and args.delta_thres.lower() == "z":
             filtered = [
                 r
                 for r in filtered
                 if is_finite(r.get("Z-STD")) and r["Delta%"] <= r["Z-STD"]
             ]
-            applied.append("Delta% ≤ Z-SD (per-record)")
+            applied.append("Delta% ≤ Z-val (per-record)")
         else:
             thr = float(args.delta_thres)
-            filtered = [r for r in filtered if r["Delta%"] <= thr]
-            applied.append(f"Delta% ≤ {thr:.2f}%")
+            if thr <= 0:
+                filtered = [
+                    r
+                    for r in filtered
+                    if is_finite(r.get("Delta%")) and r["Delta%"] <= thr
+                ]
+                applied.append(f"Delta% ≤ {thr:.2f}%")
+            else:
+                filtered = [
+                    r
+                    for r in filtered
+                    if is_finite(r.get("Delta%")) and r["Delta%"] > thr
+                ]
+                applied.append(f"Delta% > {thr:.2f}%")
     if args.z_thres is not None:
         zt = float(args.z_thres)
-        filtered = [
-            r
-            for r in filtered
-            if is_finite(r.get("Z-STD")) and r["Z-STD"] <= zt
-        ]
-        applied.append(f"Z-SD ≤ {zt:.2f}")
+        if zt <= 0:
+            filtered = [
+                r
+                for r in filtered
+                if is_finite(r.get("Z-STD")) and r["Z-STD"] <= zt
+            ]
+            applied.append(f"Z-val ≤ {zt:.2f}")
+        else:
+            filtered = [
+                r
+                for r in filtered
+                if is_finite(r.get("Z-STD")) and r["Z-STD"] > zt
+            ]
+            applied.append(f"Z-val > {zt:.2f}")
     if args.volt_thres is not None:
         vt = float(args.volt_thres)
 
@@ -534,10 +580,47 @@ def main():
         filtered = [r for r in filtered if keep_volt(r)]
         applied.append(f"ATR% ≥ {vt:.2f}%")
 
-    # Sort by increasing Delta%
-    def sort_key(r):
-        d = r.get("Delta%")
-        return (0, d) if is_finite(d) else (1, float("inf"))
+    # ----- Sorting -----
+    sort_by = args.sort_by
+    descending = False
+    metric_key = "Delta%"  # default
+
+    if sort_by == "delta":
+        metric_key = "Delta%"
+        # direction based on delta_thres (numeric only)
+        if args.delta_thres is not None and not (
+            isinstance(args.delta_thres, str) and args.delta_thres.lower() == "z"
+        ):
+            thr = float(args.delta_thres)
+            if thr > 0:
+                descending = True  # most positive first
+            else:
+                descending = False  # most negative first
+        else:
+            # no numeric threshold -> increasing (most negative first)
+            descending = False
+    elif sort_by == "z":
+        metric_key = "Z-STD"
+        if args.z_thres is not None:
+            zt = float(args.z_thres)
+            if zt > 0:
+                descending = True  # most positive Z first
+            else:
+                descending = False  # most negative Z first
+        else:
+            descending = False
+    elif sort_by == "atr":
+        metric_key = "ATR/LC%"
+        descending = True  # always largest ATR% first
+
+    if not descending:
+        def sort_key(r):
+            v = r.get(metric_key)
+            return (0, v) if is_finite(v) else (1, float("inf"))
+    else:
+        def sort_key(r):
+            v = r.get(metric_key)
+            return (0, -v) if is_finite(v) else (1, float("inf"))
 
     filtered.sort(key=sort_key)
 
