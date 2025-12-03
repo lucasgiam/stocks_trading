@@ -9,7 +9,7 @@ Scan SGX, US, or crypto tickers on Yahoo and compute:
 - MA200 (200-day moving average)
 - ΔLC% = 100 * (LC - MA20) / MA20
 - SD20 (std dev of last 20 closes)
-- Z-SD = (LC - MA20) / SD20
+- Z-val = (LC - MA20) / SD20
 - ATR20 (Average True Range over last 20 days)
 - ATR% = 100 * ATR20 / LC
 
@@ -23,7 +23,7 @@ Notes:
     'sg' for SGX (codes like 'D05', 'C6L'; mapped to Yahoo by appending '.SI'),
     'us' for US stocks (codes like 'AAPL', 'GOOG'; used as-is),
     'cc' for cryptocurrencies (codes like 'BTC', 'ETH'; mapped to Yahoo by appending '-USD').
-- --symbols takes space-separated codes (no quotes).
+- --symbols takes space-separated codes (no quotes), or 'auto' to load from all_<mode>_stocks.txt.
 - --delta_thres applies directly with its sign: Delta% must be <= delta_thres, set to 'z' to use Delta% ≤ that record's Z-SD (per-record).
 - --z_thres applies directly with its sign: Z-SD must be <= z_thres.
 - --volt_thres keeps only rows where ATR% >= volt_thres.
@@ -360,7 +360,35 @@ def main():
         )
         return
 
-    input_symbols = args.symbols
+    # Handle 'auto' mode for symbols: load from all_<mode>_stocks.txt
+    symbols_arg = args.symbols
+    if len(symbols_arg) == 1 and symbols_arg[0].lower() == "auto":
+        auto_file = f"all_{args.mode}_stocks.txt"
+        try:
+            with open(auto_file, "r", encoding="utf-8") as f:
+                text = f.read()
+        except FileNotFoundError:
+            print(
+                f"ERROR: Auto symbols file not found: {auto_file}",
+                file=sys.stderr,
+            )
+            return
+        except Exception as e:
+            print(
+                f"ERROR: Failed to read auto symbols file {auto_file}: {e}",
+                file=sys.stderr,
+            )
+            return
+        input_symbols = text.split()
+        if not input_symbols:
+            print(
+                f"ERROR: Auto symbols file {auto_file} contains no symbols.",
+                file=sys.stderr,
+            )
+            return
+    else:
+        input_symbols = symbols_arg
+
     exclude_symbols = args.exclude if args.exclude else []
 
     if args.mode == "sg":
@@ -524,7 +552,7 @@ def main():
     header = (
         f"{'Code':<4} {'Name':<10} "
         f"{'LC':>6} {'MA20':>6} {'MA50':>6} {'MA100':>6} {'MA200':>6} "
-        f"{'ΔLC%':>6} {'SD20':>5} {'Z-SD':>5} {'ATR20':>5} "
+        f"{'ΔLC%':>6} {'SD20':>5} {'Z-val':>5} {'ATR20':>5} "
         f"{'ATR%':>5}"
     )
     print(header)
