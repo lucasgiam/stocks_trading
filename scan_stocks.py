@@ -654,10 +654,10 @@ def main():
 
     # ===== One-row compact table (short labels & widths) =====
     header = (
-        f"{'Code':<4} {'Name':<10} "
-        f"{'LC':>6} {'MA20':>6} {'MA50':>6} {'MA100':>6} {'MA200':>6} "
+        f"{'Code':<4} {'Name':<12} "
+        f"{'LC':>6} {'MA20':>6} {'MA200':>6} "
         f"{'ΔLC%':>6} {'SD20':>5} {'Z':>5} "
-        f"{'ATR20':>6} {'ATR50':>6} {'ATR100':>6} {'ATR200':>6} "
+        f"{'ATR20':>6} {'ATR200':>6} "
         f"{'ATRLC%':>6} {'ATRMA%':>6}"
     )
     print(header)
@@ -669,15 +669,11 @@ def main():
             f"{(r['Name'] or '')[:10]:<10} "
             f"{fmt_price(r['LC'],      6)} "
             f"{fmt_price(r['MA20'],    6)} "
-            f"{fmt_price(r['MA50'],    6)} "
-            f"{fmt_price(r['MA100'],   6)} "
             f"{fmt_price(r['MA200'],   6)} "
             f"{fmtf(r['Delta%'],       6, 2)} "
             f"{fmt_price(r['STD20'],   5)} "
             f"{fmtf(r['Z-STD'],        5, 2)} "
             f"{fmt_price(r['ATR20'],   6)} "
-            f"{fmt_price(r['ATR50'],   6)} "
-            f"{fmt_price(r['ATR100'],  6)} "
             f"{fmt_price(r['ATR200'],  6)} "
             f"{fmtf(r['ATR-LC%'],      5, 2)} "
             f"{fmtf(r['ATR-MA%'],      5, 2)}"
@@ -687,8 +683,6 @@ def main():
         ma_stack_pairs = [
             ("MA20", r.get("MA20")),
             ("LC",   r.get("LC")),
-            ("MA50", r.get("MA50")),
-            ("MA100", r.get("MA100")),
             ("MA200", r.get("MA200")),
         ]
         finite_ma = [(name, val) for name, val in ma_stack_pairs if is_finite(val)]
