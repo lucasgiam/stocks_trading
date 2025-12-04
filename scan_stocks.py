@@ -14,8 +14,7 @@ Scan SGX, US, or crypto tickers on Yahoo and compute:
 - ATR50  (50-period Average True Range, simple average of last 50 TR values)
 - ATR100 (100-period Average True Range, simple average of last 100 TR values)
 - ATR200 (200-period Average True Range, simple average of last 200 TR values)
-- ATR-LC% = 100 * ATR20 / LC
-- ATR-MA% = 100 * ATR20 / MA20
+- ATR% = 100 * ATR20 / LC
 
 Usage example:
   python scan_stocks.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --z_thres 0 --volt_thres 3 --sort_by delta
@@ -658,7 +657,7 @@ def main():
         f"{'LC':>6} {'MA20':>6} {'MA200':>6} "
         f"{'ΔLC%':>6} {'SD20':>5} {'Z-val':>5} "
         f"{'ATR20':>6} {'ATR200':>6} "
-        f"{'ATR-LC%':>7} {'ATR-MA%':>7}"
+        f"{'ATR%':>5}"
     )
     print(header)
     print("-" * len(header))
@@ -675,8 +674,7 @@ def main():
             f"{fmtf(r['Z-STD'],        5, 2)} "
             f"{fmt_price(r['ATR20'],   6)} "
             f"{fmt_price(r['ATR200'],  6)} "
-            f"{fmtf(r['ATR-LC%'],      7, 2)} "
-            f"{fmtf(r['ATR-MA%'],      7, 2)}"
+            f"{fmtf(r['ATR-LC%'],      5, 2)} "
         )
 
         # MA ordering stack: e.g. (MA20 > LC > MA50 > MA100 > MA200)
