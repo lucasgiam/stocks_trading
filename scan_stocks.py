@@ -14,8 +14,8 @@ Scan SGX, US, or crypto tickers on Yahoo and compute:
 - ATR50  (50-period Average True Range, simple average of last 50 TR values)
 - ATR100 (100-period Average True Range, simple average of last 100 TR values)
 - ATR200 (200-period Average True Range, simple average of last 200 TR values)
-- ATRLC% = 100 * ATR20 / LC
-- ATRMA% = 100 * ATR20 / MA20
+- ATR-LC% = 100 * ATR20 / LC
+- ATR-MA% = 100 * ATR20 / MA20
 
 Usage example:
   python scan_stocks.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --z_thres 0 --volt_thres 3 --sort_by delta
@@ -656,9 +656,9 @@ def main():
     header = (
         f"{'Code':<5} {'Name':<16} "
         f"{'LC':>6} {'MA20':>6} {'MA200':>6} "
-        f"{'ΔLC%':>6} {'SD20':>5} {'Z':>5} "
+        f"{'ΔLC%':>6} {'SD20':>5} {'Z-val':>5} "
         f"{'ATR20':>6} {'ATR200':>6} "
-        f"{'ATRLC%':>6} {'ATRMA%':>6}"
+        f"{'ATR-LC%':>7} {'ATR-MA%':>7}"
     )
     print(header)
     print("-" * len(header))
