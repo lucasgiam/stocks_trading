@@ -6,12 +6,14 @@ Scan SGX, US, or crypto tickers on Yahoo and compute:
 - MA20 (20-day moving average)
 - MA50 (50-day moving average)
 - MA100 (100-day moving average)
-- MA200 (200-day moving average)
+- MA200 (100-day moving average)
 - ΔLC% = 100 * (LC - MA20) / MA20
 - SD20 (std dev of last 20 closes)
 - Z-val = (LC - MA20) / SD20
-- ATR20 (Average True Range over last 20 days)
-- ATR% = 100 * ATR20 / LC
+- ATR14 (14-period Average True Range, simple average of last 14 TR values)
+- ATR% = 100 * ATR14 / LC
+- ADX14 (14-period Directional Index strength, simple 14-bar variant)
+- RSI14 (14-period Relative Strength Index, simple 14-bar variant)
 
 Usage example:
   python scan_stocks.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --z_thres 0 --volt_thres 3 --sort_by delta
@@ -37,7 +39,7 @@ Notes:
                if delta_thres > 0 → decreasing (most positive first).
     * 'z':     sort by Z-val; if z_thres <= 0 or not specified → increasing (most negative first),
                if z_thres > 0 → decreasing (most positive first).
-    * 'atr':   sort by ATR% (ATR20/LC), always in decreasing order (largest first).
+    * 'atr':   sort by ATR% (ATR14/LC), always in decreasing order (largest first).
 - --exclude removes the specified symbols from being processed (normalization by mode is applied).
 """
 
@@ -250,8 +252,8 @@ def ma_last(closes_valid, n):
     return mean(window)
 
 
-def compute_atr20(highs, lows, closes):
-    """ATR(20) with True Range computed from H/L/PrevClose; ignores None rows."""
+def compute_atr14(highs, lows, closes):
+    """ATR(14) as simple average of last 14 True Range values."""
     tr_list = []
     prev_close = None
     N = max(len(highs), len(lows), len(closes))
@@ -269,8 +271,116 @@ def compute_atr20(highs, lows, closes):
         if isinstance(tr, (int, float)) and math.isfinite(tr):
             tr_list.append(tr)
         prev_close = c if c is not None else prev_close
-    last20 = tr_list[-20:] if len(tr_list) >= 20 else tr_list
-    return mean(last20)
+
+    if not tr_list:
+        return float("nan")
+    last14 = tr_list[-14:] if len(tr_list) >= 14 else tr_list
+    return mean(last14)
+
+
+def compute_adx14(highs, lows, closes):
+    """ADX14-style trend strength: simple 14-bar Directional Index based on last 14 DM/TR values."""
+    prev_high = None
+    prev_low = None
+    prev_close = None
+
+    tr_list = []
+    plus_dm_list = []
+    minus_dm_list = []
+
+    N = max(len(highs), len(lows), len(closes))
+    for i in range(N):
+        h = highs[i] if i < len(highs) else None
+        l = lows[i] if i < len(lows) else None
+        c = closes[i] if i < len(closes) else None
+
+        if h is None or l is None:
+            prev_close = c if c is not None else prev_close
+            prev_high = h if h is not None else prev_high
+            prev_low = l if l is not None else prev_low
+            continue
+
+        if prev_high is None or prev_low is None or prev_close is None:
+            tr = h - l
+            plus_dm = 0.0
+            minus_dm = 0.0
+        else:
+            tr = max(h - l, abs(h - prev_close), abs(l - prev_close))
+            up_move = h - prev_high
+            down_move = prev_low - l
+            if up_move > down_move and up_move > 0:
+                plus_dm = up_move
+                minus_dm = 0.0
+            elif down_move > up_move and down_move > 0:
+                plus_dm = 0.0
+                minus_dm = down_move
+            else:
+                plus_dm = 0.0
+                minus_dm = 0.0
+
+        if isinstance(tr, (int, float)) and math.isfinite(tr):
+            tr_list.append(float(tr))
+            plus_dm_list.append(float(plus_dm))
+            minus_dm_list.append(float(minus_dm))
+
+        prev_close = c if c is not None else prev_close
+        prev_high = h if h is not None else prev_high
+        prev_low = l if l is not None else prev_low
+
+    if not tr_list:
+        return float("nan")
+
+    last_tr = tr_list[-14:] if len(tr_list) >= 14 else tr_list
+    last_plus_dm = plus_dm_list[-14:] if len(plus_dm_list) >= 14 else plus_dm_list
+    last_minus_dm = minus_dm_list[-14:] if len(minus_dm_list) >= 14 else minus_dm_list
+
+    sum_tr = sum(last_tr)
+    if sum_tr == 0:
+        return float("nan")
+
+    plus_di = 100.0 * sum(last_plus_dm) / sum_tr
+    minus_di = 100.0 * sum(last_minus_dm) / sum_tr
+    if (plus_di + minus_di) == 0:
+        return float("nan")
+
+    dx = 100.0 * abs(plus_di - minus_di) / (plus_di + minus_di)
+    return dx
+
+
+def compute_rsi14(closes):
+    """RSI14-style oscillator using simple averages over the last 14 price changes."""
+    prices = [c for c in closes if c is not None]
+    if len(prices) < 2:
+        return float("nan")
+
+    changes = []
+    for i in range(1, len(prices)):
+        changes.append(prices[i] - prices[i - 1])
+
+    if not changes:
+        return float("nan")
+
+    last_changes = changes[-14:] if len(changes) >= 14 else changes
+    n = len(last_changes)
+    if n == 0:
+        return float("nan")
+
+    sum_gain = sum(c for c in last_changes if c > 0)
+    sum_loss = sum(-c for c in last_changes if c < 0)
+
+    avg_gain = sum_gain / n
+    avg_loss = sum_loss / n
+
+    if avg_loss == 0 and avg_gain == 0:
+        return float("nan")
+    if avg_loss == 0:
+        return 100.0
+    if avg_gain == 0:
+        return 0.0
+
+    rs = avg_gain / avg_loss
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    return rsi
 
 
 def latest_non_none(arr):
@@ -350,7 +460,7 @@ def main():
         "--volt_thres",
         type=float,
         default=None,
-        help="Keep only rows where ATR% (ATR20/LC) >= volt_thres.",
+        help="Keep only rows where ATR% (ATR14/LC) >= volt_thres.",
     )
     ap.add_argument(
         "--sort_by",
@@ -471,7 +581,9 @@ def main():
                 if len(closes_valid) >= 1
                 else float("nan")
             )
-            atr20 = compute_atr20(highs, lows, closes)
+            atr14 = compute_atr14(highs, lows, closes)
+            adx14 = compute_adx14(highs, lows, closes)
+            rsi14 = compute_rsi14(closes_valid)
 
             if is_finite(ma20) and ma20 != 0:
                 delta_pct = 100.0 * (latest - ma20) / ma20
@@ -489,8 +601,8 @@ def main():
                 else float("nan")
             )
 
-            if is_finite(atr20) and is_finite(latest) and latest != 0:
-                atr_lc_pct = 100.0 * atr20 / latest
+            if is_finite(atr14) and is_finite(latest) and latest != 0:
+                atr_lc_pct = 100.0 * atr14 / latest
             else:
                 atr_lc_pct = float("nan")
 
@@ -514,9 +626,11 @@ def main():
                     "MA200": ma200,
                     "Delta%": delta_pct,
                     "STD20": std20,
-                    "ATR20": atr20,
+                    "ATR14": atr14,
                     "Z-STD": z_std,
                     "ATR/LC%": atr_lc_pct,
+                    "ADX14": adx14,
+                    "RSI14": rsi14,
                 }
             )
         except Exception as e:
@@ -635,8 +749,8 @@ def main():
     header = (
         f"{'Code':<4} {'Name':<10} "
         f"{'LC':>6} {'MA20':>6} {'MA50':>6} {'MA100':>6} {'MA200':>6} "
-        f"{'ΔLC%':>6} {'SD20':>5} {'Z-val':>5} {'ATR20':>5} "
-        f"{'ATR%':>5}"
+        f"{'ΔLC%':>6} {'SD20':>5} {'Z-val':>5} {'ATR14':>5} "
+        f"{'ADX14':>6} {'RSI14':>6} {'ATR%':>5}"
     )
     print(header)
     print("-" * len(header))
@@ -653,7 +767,9 @@ def main():
             f"{fmtf(r['Delta%'],      6, 2)} "
             f"{fmt_price(r['STD20'],  5)} "
             f"{fmtf(r['Z-STD'],       5, 2)} "
-            f"{fmt_price(r['ATR20'],  5)} "
+            f"{fmt_price(r['ATR14'],  5)} "
+            f"{fmtf(r['ADX14'],       6, 2)} "
+            f"{fmtf(r['RSI14'],       6, 2)} "
             f"{fmtf(r['ATR/LC%'],     5, 2)}"
         )
 
