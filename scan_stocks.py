@@ -675,8 +675,8 @@ def main():
             f"{fmtf(r['Z-STD'],        5, 2)} "
             f"{fmt_price(r['ATR20'],   6)} "
             f"{fmt_price(r['ATR200'],  6)} "
-            f"{fmtf(r['ATR-LC%'],      5, 2)} "
-            f"{fmtf(r['ATR-MA%'],      5, 2)}"
+            f"{fmtf(r['ATR-LC%'],      7, 2)} "
+            f"{fmtf(r['ATR-MA%'],      7, 2)}"
         )
 
         # MA ordering stack: e.g. (MA20 > LC > MA50 > MA100 > MA200)
