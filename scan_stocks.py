@@ -664,7 +664,7 @@ def main():
     header = (
         f"{'Code':<6} {'Name':<40} "
         f"{'LC':>6} {'MA20':>6} {'MA200':>6} {'ΔLC%':>6} "
-        f"{'ATR20':>6} {'ATR200':>6} {'Z-ATR':>5} {'ATR%':>5}"
+        f"{'ATR20':>5} {'ATR200':>6} {'Z-ATR':>5} {'ATR%':>5}"
     )
     print(header)
     print("-" * len(header))
@@ -677,8 +677,8 @@ def main():
             f"{fmt_price(r['MA20'],    6)} "
             f"{fmt_price(r['MA200'],   6)} "
             f"{fmtf(r['Delta%'],       6, 2)} "
-            f"{fmt_price(r['ATR20'],   6)} "
-            f"{fmt_price(r['ATR200'],  6)} "
+            f"{fmt_price(r['ATR20'],   5)} "
+            f"{fmt_price(r['ATR200'],  5)} "
             f"{fmtf(r['Z-ATR'],        5, 2)} "
             f"{fmtf(r['ATR-LC%'],      5, 2)} "
         )
