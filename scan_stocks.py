@@ -8,8 +8,7 @@ Scan SGX, US, crypto, or index tickers on Yahoo and compute:
 - MA100 (100-day moving average)
 - MA200 (100-day moving average)
 - ΔLC% = 100 * (LC - MA20) / MA20
-- SD20 (std dev of last 20 closes)
-- Z-val = (LC - MA20) / SD20
+- Z-ATR = (LC - MA20) / ATR20
 - ATR20  (20-period Average True Range, simple average of last 20 TR values)
 - ATR50  (50-period Average True Range, simple average of last 50 TR values)
 - ATR100 (100-period Average True Range, simple average of last 100 TR values)
@@ -33,15 +32,15 @@ Notes:
 - --delta_thres:
     * if X <= 0, keep rows where Delta% <= X
     * if X > 0, keep rows where Delta% > X
-    * or set to 'z' to use per-record Delta% ≤ that record's Z-val.
+    * or set to 'z' to use per-record Delta% ≤ that record's Z-ATR.
 - --z_thres:
-    * if X <= 0, keep rows where Z-val <= X
-    * if X > 0, keep rows where Z-val > X.
+    * if X <= 0, keep rows where Z-ATR <= X
+    * if X > 0, keep rows where Z-ATR > X.
 - --volt_thres keeps only rows where ATR-LC% >= volt_thres.
 - --sort_by controls sorting of the final table:
     * 'delta': sort by ΔLC%; if delta_thres <= 0 or not specified → increasing (most negative first),
                if delta_thres > 0 → decreasing (most positive first).
-    * 'z':     sort by Z-val; if z_thres <= 0 or not specified → increasing (most negative first),
+    * 'z':     sort by Z-ATR; if z_thres <= 0 or not specified → increasing (most negative first),
                if z_thres > 0 → decreasing (most positive first).
     * 'atr':   sort by ATR-LC% (ATR20/LC), always in decreasing order (largest first).
 - --exclude removes the specified symbols from being processed (normalization by mode is applied).
@@ -352,7 +351,7 @@ def main():
         help=(
             "Delta% filter: if X <= 0, keep rows with Delta% ≤ X; "
             "if X > 0, keep rows with Delta% > X. "
-            "Use 'z' to apply per-record Delta% ≤ Z-val."
+            "Use 'z' to apply per-record Delta% ≤ Z-ATR."
         ),
     )
     ap.add_argument(
@@ -360,8 +359,8 @@ def main():
         type=float,
         default=None,
         help=(
-            "Z-val filter: if X <= 0, keep rows with Z-val ≤ X; "
-            "if X > 0, keep rows with Z-val > X."
+            "Z-ATR filter: if X <= 0, keep rows with Z-ATR ≤ X; "
+            "if X > 0, keep rows with Z-ATR > X."
         ),
     )
     ap.add_argument(
@@ -375,7 +374,7 @@ def main():
         choices=["delta", "atr", "z"],
         default="delta",
         help=(
-            "Sort output by: 'delta' (ΔLC%), 'atr' (ATR-LC%), or 'z' (Z-val). "
+            "Sort output by: 'delta' (ΔLC%), 'atr' (ATR-LC%), or 'z' (Z-ATR). "
             "For 'delta' and 'z': if threshold X <= 0 or not set → increasing (most negative first); "
             "if X > 0 → decreasing (most positive first). "
             "For 'atr': always decreasing (largest ATR-LC% first)."
@@ -491,11 +490,6 @@ def main():
             ma200 = ma_last(closes_valid, 200)
 
             latest = latest_non_none(closes)
-            std20 = (
-                std_pop(closes_valid[-20:])
-                if len(closes_valid) >= 1
-                else float("nan")
-            )
 
             # ATRs using the refactored generic function
             atr20 = compute_atr(highs, lows, closes, 20)
@@ -508,13 +502,14 @@ def main():
             else:
                 delta_pct = float("nan")
 
-            z_std = (
-                (latest - ma20) / std20
+            # Z-ATR = (LC - MA20) / ATR20
+            z_atr = (
+                (latest - ma20) / atr20
                 if (
                     is_finite(latest)
                     and is_finite(ma20)
-                    and is_finite(std20)
-                    and std20 != 0
+                    and is_finite(atr20)
+                    and atr20 != 0
                 )
                 else float("nan")
             )
@@ -523,11 +518,6 @@ def main():
                 atr_lc_pct = 100.0 * atr20 / latest
             else:
                 atr_lc_pct = float("nan")
-
-            if is_finite(atr20) and is_finite(ma20) and ma20 != 0:
-                atr_ma_pct = 100.0 * atr20 / ma20
-            else:
-                atr_ma_pct = float("nan")
 
             # Display symbol stripping suffixes/prefixes based on mode
             raw_code = sym
@@ -550,14 +540,12 @@ def main():
                     "MA100": ma100,
                     "MA200": ma200,
                     "Delta%": delta_pct,
-                    "STD20": std20,
                     "ATR20": atr20,
                     "ATR50": atr50,
                     "ATR100": atr100,
                     "ATR200": atr200,
-                    "Z-STD": z_std,
+                    "Z-ATR": z_atr,
                     "ATR-LC%": atr_lc_pct,
-                    "ATR-MA%": atr_ma_pct,
                 }
             )
         except Exception as e:
@@ -571,14 +559,14 @@ def main():
     # Apply optional filters
     applied = []
     if args.delta_thres is not None:
-        # 'z' mode: keep rows where Delta% ≤ that record's Z-val (per-record)
+        # 'z' mode: keep rows where Delta% ≤ that record's Z-ATR (per-record)
         if isinstance(args.delta_thres, str) and args.delta_thres.lower() == "z":
             filtered = [
                 r
                 for r in filtered
-                if is_finite(r.get("Z-STD")) and r["Delta%"] <= r["Z-STD"]
+                if is_finite(r.get("Z-ATR")) and r["Delta%"] <= r["Z-ATR"]
             ]
-            applied.append("Delta% ≤ Z-val (per-record)")
+            applied.append("Delta% ≤ Z-ATR (per-record)")
         else:
             thr = float(args.delta_thres)
             if thr <= 0:
@@ -601,16 +589,16 @@ def main():
             filtered = [
                 r
                 for r in filtered
-                if is_finite(r.get("Z-STD")) and r["Z-STD"] <= zt
+                if is_finite(r.get("Z-ATR")) and r["Z-ATR"] <= zt
             ]
-            applied.append(f"Z-val ≤ {zt:.2f}")
+            applied.append(f"Z-ATR ≤ {zt:.2f}")
         else:
             filtered = [
                 r
                 for r in filtered
-                if is_finite(r.get("Z-STD")) and r["Z-STD"] > zt
+                if is_finite(r.get("Z-ATR")) and r["Z-ATR"] > zt
             ]
-            applied.append(f"Z-val > {zt:.2f}")
+            applied.append(f"Z-ATR > {zt:.2f}")
     if args.volt_thres is not None:
         vt = float(args.volt_thres)
 
@@ -641,13 +629,13 @@ def main():
             # no numeric threshold -> increasing (most negative first)
             descending = False
     elif sort_by == "z":
-        metric_key = "Z-STD"
+        metric_key = "Z-ATR"
         if args.z_thres is not None:
             zt = float(args.z_thres)
             if zt > 0:
-                descending = True  # most positive Z first
+                descending = True  # most positive Z-ATR first
             else:
-                descending = False  # most negative Z first
+                descending = False  # most negative Z-ATR first
         else:
             descending = False
     elif sort_by == "atr":
@@ -675,10 +663,8 @@ def main():
     # ===== One-row compact table (short labels & widths) =====
     header = (
         f"{'Code':<5} {'Name':<16} "
-        f"{'LC':>6} {'MA20':>6} {'MA200':>6} "
-        f"{'ΔLC%':>6} {'SD20':>5} {'Z-val':>5} "
-        f"{'ATR20':>6} {'ATR200':>6} "
-        f"{'ATR%':>5}"
+        f"{'LC':>6} {'MA20':>6} {'MA200':>6} {'ΔLC%':>6} "
+        f"{'ATR20':>6} {'ATR200':>6} {'Z-ATR':>5} {'ATR%':>5}"
     )
     print(header)
     print("-" * len(header))
@@ -691,10 +677,9 @@ def main():
             f"{fmt_price(r['MA20'],    6)} "
             f"{fmt_price(r['MA200'],   6)} "
             f"{fmtf(r['Delta%'],       6, 2)} "
-            f"{fmt_price(r['STD20'],   5)} "
-            f"{fmtf(r['Z-STD'],        5, 2)} "
             f"{fmt_price(r['ATR20'],   6)} "
             f"{fmt_price(r['ATR200'],  6)} "
+            f"{fmtf(r['Z-ATR'],        5, 2)} "
             f"{fmtf(r['ATR-LC%'],      5, 2)} "
         )
 
