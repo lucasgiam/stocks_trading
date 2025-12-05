@@ -671,8 +671,8 @@ def main():
 
     for r in filtered:
         print(
-            f"{(r['Symbol'] or '')[:5]:<5} "
-            f"{(r['Name'] or '')[:16]:<16} "
+            f"{(r['Symbol'] or '')[:6]:<6} "
+            f"{(r['Name'] or '')[:21]:<21} "
             f"{fmt_price(r['LC'],      6)} "
             f"{fmt_price(r['MA20'],    6)} "
             f"{fmt_price(r['MA200'],   6)} "
