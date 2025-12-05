@@ -662,7 +662,7 @@ def main():
 
     # ===== One-row compact table (short labels & widths) =====
     header = (
-        f"{'Code':<5} {'Name':<16} "
+        f"{'Code':<6} {'Name':<21} "
         f"{'LC':>6} {'MA20':>6} {'MA200':>6} {'ΔLC%':>6} "
         f"{'ATR20':>6} {'ATR200':>6} {'Z-ATR':>5} {'ATR%':>5}"
     )
