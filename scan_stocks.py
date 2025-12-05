@@ -1,7 +1,7 @@
 """
 scan_stocks.py
 
-Scan SGX, US, or crypto tickers on Yahoo and compute:
+Scan SGX, US, crypto, or index tickers on Yahoo and compute:
 - LC (latest close)
 - MA20 (20-day moving average)
 - MA50 (50-day moving average)
@@ -20,13 +20,16 @@ Usage example:
   python scan_stocks.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --z_thres 0 --volt_thres 3 --sort_by delta
   python scan_stocks.py --mode us --symbols AAPL GOOG MSFT NVDA --delta_thres 0 --z_thres 0 --volt_thres 3 --sort_by atr
   python scan_stocks.py --mode cc --symbols BTC ETH SOL --delta_thres 0 --z_thres 0 --volt_thres 3 --sort_by z
+  python scan_stocks.py --mode id --symbols ^STI ^DJI ^IXIC ^GSPC --delta_thres 0 --z_thres 0 --volt_thres 3 --sort_by delta
 
 Notes:
 - --mode selects:
     'sg' for SGX (codes like 'D05', 'C6L'; mapped to Yahoo by appending '.SI'),
     'us' for US stocks (codes like 'AAPL', 'GOOG'; used as-is),
-    'cc' for cryptocurrencies (codes like 'BTC', 'ETH'; mapped to Yahoo by appending '-USD').
+    'cc' for cryptocurrencies (codes like 'BTC', 'ETH'; mapped to Yahoo by appending '-USD'),
+    'id' for indexes (codes like '^STI', '^DJI'; used as-is for Yahoo, but '^' stripped in display).
 - --symbols takes space-separated codes (no quotes), or 'auto' to load from all_<mode>_stocks.txt.
+  For --mode id, if --symbols is omitted/empty, the default symbols used are: ^STI, ^DJI, ^IXIC, ^GSPC.
 - --delta_thres:
     * if X <= 0, keep rows where Delta% <= X
     * if X > 0, keep rows where Delta% > X
@@ -70,8 +73,8 @@ YF_SEARCH_URL = "https://query2.finance.yahoo.com/v1/finance/search?q={symbol}&q
 
 # 1 year of daily bars; include adjusted close
 YF_CHART_1Y_URL = (
-    "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-    "?interval=1d&range=1y&includeAdjustedClose=true"
+    "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?"
+    "interval=1d&range=1y&includeAdjustedClose=true"
 )
 
 # quoteSummary URLs (currently not used in output, kept for possible future use)
@@ -169,6 +172,12 @@ def ensure_cc(ticker: str) -> str:
     """Normalize crypto tickers to Yahoo's '-USD' format."""
     t = ticker.strip().upper()
     return t if t.endswith("-USD") else f"{t}-USD"
+
+
+def ensure_idx(ticker: str) -> str:
+    """Normalize index tickers to Yahoo's '^CODE' format."""
+    t = ticker.strip().upper()
+    return t if t.startswith("^") else f"^{t}"
 
 
 def try_quote_names(symbols_si):
@@ -312,25 +321,28 @@ def fmt_price(x, width=6, max_dp=3):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Scan SGX, US, or crypto (Yahoo) and rank by Delta% vs MA20."
+        description="Scan SGX, US, crypto, or index (Yahoo) and rank by Delta% vs MA20."
     )
     ap.add_argument(
         "--mode",
-        choices=["sg", "us", "cc"],
+        choices=["sg", "us", "cc", "id"],
         required=True,
         help=(
             "Market mode: 'sg' for SGX (codes like D05, C6L; '.SI' will be appended), "
             "'us' for US stocks (codes like AAPL, GOOG; used as-is), "
-            "'cc' for cryptocurrencies (codes like BTC, ETH; '-USD' will be appended)."
+            "'cc' for cryptocurrencies (codes like BTC, ETH; '-USD' will be appended), "
+            "'id' for indexes (codes like ^STI, ^DJI; used as-is for Yahoo)."
         ),
     )
     ap.add_argument(
         "--symbols",
         nargs="+",
         help=(
-            "Space-separated stock/crypto codes "
-            "(e.g., CC3 G13 for SGX; AAPL GOOG for US; BTC ETH for crypto). "
-            "For SGX, '.SI' suffix is optional. For crypto, '-USD' suffix is optional."
+            "Space-separated stock/crypto/index codes "
+            "(e.g., CC3 G13 for SGX; AAPL GOOG for US; BTC ETH for crypto; ^STI ^DJI for indexes). "
+            "For SGX, '.SI' suffix is optional. For crypto, '-USD' suffix is optional. "
+            "For indexes, '^' will be added if omitted. For --mode id with no symbols, "
+            "defaults to: ^STI ^DJI ^IXIC ^GSPC."
         ),
     )
     # Accept float (as string) or the string 'z'
@@ -380,12 +392,13 @@ def main():
         nargs="+",
         help=(
             "Space-separated codes to exclude "
-            "('.SI' optional for SGX; '-USD' optional for crypto)."
+            "('.SI' optional for SGX; '-USD' optional for crypto; '^' optional for indexes)."
         ),
     )
     args = ap.parse_args()
 
-    if not args.symbols:
+    # For non-index modes, symbols must be provided (unless using 'auto' later).
+    if not args.symbols and args.mode != "id":
         print(
             "ERROR: No symbols provided. Please supply at least one via --symbols.",
             file=sys.stderr,
@@ -393,8 +406,7 @@ def main():
         return
 
     # Handle 'auto' mode for symbols: load from all_<mode>_stocks.txt
-    symbols_arg = args.symbols
-    if len(symbols_arg) == 1 and symbols_arg[0].lower() == "auto":
+    if args.symbols and len(args.symbols) == 1 and args.symbols[0].lower() == "auto":
         auto_file = f"all_{args.mode}_stocks.txt"
         try:
             with open(auto_file, "r", encoding="utf-8") as f:
@@ -419,7 +431,11 @@ def main():
             )
             return
     else:
-        input_symbols = symbols_arg
+        # For index mode with no symbols, use default set
+        if args.mode == "id" and not args.symbols:
+            input_symbols = ["^STI", "^DJI", "^IXIC", "^GSPC"]
+        else:
+            input_symbols = args.symbols
 
     exclude_symbols = args.exclude if args.exclude else []
 
@@ -429,6 +445,9 @@ def main():
     elif args.mode == "cc":
         exclude_normalized = {ensure_cc(s) for s in exclude_symbols}
         normalized_symbols = [ensure_cc(s) for s in input_symbols]
+    elif args.mode == "id":
+        exclude_normalized = {ensure_idx(s) for s in exclude_symbols}
+        normalized_symbols = [ensure_idx(s) for s in input_symbols]
     else:  # 'us'
         exclude_normalized = {s.strip().upper() for s in exclude_symbols}
         normalized_symbols = [s.strip().upper() for s in input_symbols]
@@ -510,12 +529,14 @@ def main():
             else:
                 atr_ma_pct = float("nan")
 
-            # Display symbol stripping suffixes based on mode
+            # Display symbol stripping suffixes/prefixes based on mode
             raw_code = sym
             if args.mode == "sg":
                 disp_code = raw_code.removesuffix(".SI")
             elif args.mode == "cc":
                 disp_code = raw_code.removesuffix("-USD")
+            elif args.mode == "id":
+                disp_code = raw_code[1:] if raw_code.startswith("^") else raw_code
             else:
                 disp_code = raw_code
 
@@ -676,20 +697,6 @@ def main():
             f"{fmt_price(r['ATR200'],  6)} "
             f"{fmtf(r['ATR-LC%'],      5, 2)} "
         )
-
-        # MA ordering stack: e.g. (MA20 > LC > MA50 > MA100 > MA200)
-        ma_stack_pairs = [
-            ("MA20", r.get("MA20")),
-            ("LC",   r.get("LC")),
-            ("MA200", r.get("MA200")),
-        ]
-        finite_ma = [(name, val) for name, val in ma_stack_pairs if is_finite(val)]
-        if finite_ma:
-            finite_ma.sort(key=lambda x: x[1], reverse=True)
-            stack_str = "(" + " > ".join(name for name, _ in finite_ma) + ")"
-        else:
-            stack_str = "(MA stack unavailable)"
-        print(stack_str)
 
 
 if __name__ == "__main__":
