@@ -699,7 +699,7 @@ def main():
 
     # ===== One-row compact table (short labels & widths) =====
     header = (
-        f"{'Code':<5} {'Name':<15} "
+        f"{'Code':<5} {'Name':<16} "
         f"{'LC':>6} {'MA5':>6} {'MA20':>6} {'MA200':>6} {'ΔLC%':>6} {'SD20':>5} {'Z-val':>5} "
         f"{'ATR20':>6} {'ATR200':>6} {'ATR%':>5}"
     )
@@ -709,7 +709,7 @@ def main():
     for r in filtered:
         print(
             f"{(r['Symbol'] or '')[:5]:<5} "
-            f"{(r['Name'] or '')[:15]:<15} "
+            f"{(r['Name'] or '')[:16]:<16} "
             f"{fmt_price(r['LC'],      6)} "
             f"{fmt_price(r['MA5'],     6)} "
             f"{fmt_price(r['MA20'],    6)} "
