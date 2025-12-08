@@ -13,9 +13,7 @@ Scan SGX, US, crypto, or index tickers on Yahoo and compute:
 - SD20 (20-day moving standard deviation around MA20)
 - Z = (LC - MA20) / SD20
 - ATR20  (20-period Average True Range, simple average of last 20 TR values)
-- ATR50  (50-period Average True Range, simple average of last 50 TR values)
-- ATR100 (100-period Average True Range, simple average of last 100 TR values)
-- ATR200 (200-period Average True Range, simple average of last 200 TR values)
+- AT200 (200-period Average True Range, simple average of last 200 TR values)
 - ATR% = 100 * ATR20 / LC
 
 Usage example:
@@ -708,18 +706,17 @@ def main():
 
     # ===== One-row compact table (short labels & widths) =====
     header = (
-        f"{'Code':<4} {'Name':<10} "
+        f"{'Code':<4} {'Name':<9} "
         f"{'LC':>6} {'MA5':>6} {'MA10':>6} {'MA20':>6} {'MA50':>6} {'MA100':>6} {'MA200':>6} "
-        f"{'ΔLC%':>6} {'SD20':>5} {'Z':>5} "
-        f"{'ATR20':>6} {'ATR200':>6} {'ATR%':>5}"
+        f"{'ΔLC%':>6} {'SD20':>5} {'Z':>5} {'ATR20':>5} {'AT200':>5} {'ATR%':>5}"
     )
     print(header)
     print("-" * len(header))
 
     for r in filtered:
         print(
-            f"{(r['Symbol'] or '')[:5]:<5} "
-            f"{(r['Name'] or '')[:16]:<16} "
+            f"{(r['Symbol'] or '')[:4]:<4} "
+            f"{(r['Name'] or '')[:9]:<9} "
             f"{fmt_price(r['LC'],      6)} "
             f"{fmt_price(r['MA5'],     6)} "
             f"{fmt_price(r['MA10'],    6)} "
@@ -730,8 +727,8 @@ def main():
             f"{fmtf(r['Delta%'],       6, 2)} "
             f"{fmt_price(r['SD20'],    5)} "
             f"{fmtf(r['Z-val'],        5, 2)} "
-            f"{fmt_price(r['ATR20'],   6)} "
-            f"{fmt_price(r['ATR200'],  6)} "
+            f"{fmt_price(r['ATR20'],   5)} "
+            f"{fmt_price(r['ATR200'],  5)} "
             f"{fmtf(r['ATR-LC%'],      5, 2)}"
         )
         stack = ma_stack_str(r)
