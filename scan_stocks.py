@@ -3,8 +3,10 @@ scan_stocks.py
 
 Scan SGX, US, crypto, or index tickers on Yahoo and compute:
 - LC (latest close)
-- MA5  (5-day moving average)
-- MA20 (20-day moving average)
+- MA5   (5-day moving average)
+- MA20  (20-day moving average)
+- MA50  (50-day moving average)
+- MA100 (100-day moving average)
 - MA200 (200-day moving average)
 - ΔLC% = 100 * (LC - MA20) / MA20
 - Z-ATR = (LC - MA20) / ATR20
@@ -319,18 +321,22 @@ def fmt_price(x, width=6, max_dp=3):
 
 def ma_stack_str(r):
     """
-    Return a string like '(LC > MA5 > MA20 > MA200)',
-    ordering LC, MA5, MA20, MA200 by actual numeric value (descending).
+    Return a string like '(LC > MA5 > MA20 > MA50 > MA100 > MA200)',
+    ordering LC, MA5, MA20, MA50, MA100, MA200 by actual numeric value (descending).
     """
     lc = r.get("LC")
     ma5 = r.get("MA5")
     ma20 = r.get("MA20")
+    ma50 = r.get("MA50")
+    ma100 = r.get("MA100")
     ma200 = r.get("MA200")
 
     items = [
         ("LC", lc),
         ("MA5", ma5),
         ("MA20", ma20),
+        ("MA50", ma50),
+        ("MA100", ma100),
         ("MA200", ma200),
     ]
     items = [(name, val) for name, val in items if is_finite(val)]
@@ -515,6 +521,8 @@ def main():
 
             ma5 = ma_last(closes_valid, 5)
             ma20 = ma_last(closes_valid, 20)
+            ma50 = ma_last(closes_valid, 50)
+            ma100 = ma_last(closes_valid, 100)
             ma200 = ma_last(closes_valid, 200)
 
             latest = latest_non_none(closes)
@@ -566,6 +574,8 @@ def main():
                     "LC": latest,
                     "MA5": ma5,
                     "MA20": ma20,
+                    "MA50": ma50,
+                    "MA100": ma100,
                     "MA200": ma200,
                     "Delta%": delta_pct,
                     "ATR5": atr5,
@@ -701,8 +711,8 @@ def main():
 
     # ===== One-row compact table (short labels & widths) =====
     header = (
-        f"{'Code':<5} {'Name':<16} "
-        f"{'LC':>6} {'MA5':>6} {'MA20':>6} {'MA200':>6} {'ΔLC%':>6} "
+        f"{'Code':<4} {'Name':<10} "
+        f"{'LC':>6} {'MA5':>6} {'MA20':>6} {'MA50':>6} {'MA100':>6} {'MA200':>6} {'ΔLC%':>6} "
         f"{'ATR5':>6} {'ATR20':>6} {'ATR200':>6} {'Z-ATR':>5} {'ATR%':>5}"
     )
     print(header)
@@ -710,11 +720,13 @@ def main():
 
     for r in filtered:
         print(
-            f"{(r['Symbol'] or '')[:5]:<5} "
-            f"{(r['Name'] or '')[:16]:<16} "
+            f"{(r['Symbol'] or '')[:4]:<4} "
+            f"{(r['Name'] or '')[:10]:<10} "
             f"{fmt_price(r['LC'],      6)} "
             f"{fmt_price(r['MA5'],     6)} "
             f"{fmt_price(r['MA20'],    6)} "
+            f"{fmt_price(r['MA50'],    6)} "
+            f"{fmt_price(r['MA100'],   6)} "
             f"{fmt_price(r['MA200'],   6)} "
             f"{fmtf(r['Delta%'],       6, 2)} "
             f"{fmt_price(r['ATR5'],    6)} "
