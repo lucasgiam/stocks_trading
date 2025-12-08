@@ -4,13 +4,14 @@ scan_stocks.py
 Scan SGX, US, crypto, or index tickers on Yahoo and compute:
 - LC (latest close)
 - MA5  (5-day moving average)
+- MA10 (10-day moving average)
 - MA20 (20-day moving average)
 - MA50 (50-day moving average)
 - MA100 (100-day moving average)
 - MA200 (100-day moving average)
 - ΔLC% = 100 * (LC - MA20) / MA20
 - SD20 (20-day moving standard deviation around MA20)
-- Z-val = (LC - MA20) / SD20
+- Z = (LC - MA20) / SD20
 - ATR20  (20-period Average True Range, simple average of last 20 TR values)
 - ATR50  (50-period Average True Range, simple average of last 50 TR values)
 - ATR100 (100-period Average True Range, simple average of last 100 TR values)
@@ -322,18 +323,24 @@ def fmt_price(x, width=6, max_dp=3):
 
 def ma_stack_str(r):
     """
-    Return a string like '(MA20 < LC < MA5 < MA200)' on its own line,
-    ordering MA20, LC, MA5, MA200 by actual numeric value (ascending).
+    Return a string like '(LC > MA5 > MA10 > MA20 > MA50 > MA100 > MA200)',
+    ordering LC, MA5, MA10, MA20, MA50, MA100, MA200 by actual numeric value (descending).
     """
     lc = r.get("LC")
     ma5 = r.get("MA5")
+    ma10 = r.get("MA10")
     ma20 = r.get("MA20")
+    ma50 = r.get("MA50")
+    ma100 = r.get("MA100")
     ma200 = r.get("MA200")
 
     items = [
-        ("MA20", ma20),
         ("LC", lc),
         ("MA5", ma5),
+        ("MA10", ma10),
+        ("MA20", ma20),
+        ("MA50", ma50),
+        ("MA100", ma100),
         ("MA200", ma200),
     ]
     items = [(name, val) for name, val in items if is_finite(val)]
@@ -512,6 +519,7 @@ def main():
                 raise ValueError("No close prices in 1Y history")
 
             ma5 = ma_last(closes_valid, 5)
+            ma10 = ma_last(closes_valid, 10)
             ma20 = ma_last(closes_valid, 20)
             ma50 = ma_last(closes_valid, 50)
             ma100 = ma_last(closes_valid, 100)
@@ -571,6 +579,7 @@ def main():
                     "Name": name_map.get(sym, sym),
                     "LC": latest,
                     "MA5": ma5,
+                    "MA10": ma10,
                     "MA20": ma20,
                     "MA50": ma50,
                     "MA100": ma100,
@@ -700,7 +709,8 @@ def main():
     # ===== One-row compact table (short labels & widths) =====
     header = (
         f"{'Code':<5} {'Name':<16} "
-        f"{'LC':>6} {'MA5':>6} {'MA20':>6} {'MA200':>6} {'ΔLC%':>6} {'SD20':>5} {'Z':>5} "
+        f"{'LC':>6} {'MA5':>6} {'MA10':>6} {'MA20':>6} {'MA50':>6} {'MA100':>6} {'MA200':>6} "
+        f"{'ΔLC%':>6} {'SD20':>5} {'Z':>5} "
         f"{'ATR20':>6} {'ATR200':>6} {'ATR%':>5}"
     )
     print(header)
@@ -712,7 +722,10 @@ def main():
             f"{(r['Name'] or '')[:16]:<16} "
             f"{fmt_price(r['LC'],      6)} "
             f"{fmt_price(r['MA5'],     6)} "
+            f"{fmt_price(r['MA10'],    6)} "
             f"{fmt_price(r['MA20'],    6)} "
+            f"{fmt_price(r['MA50'],    6)} "
+            f"{fmt_price(r['MA100'],   6)} "
             f"{fmt_price(r['MA200'],   6)} "
             f"{fmtf(r['Delta%'],       6, 2)} "
             f"{fmt_price(r['SD20'],    5)} "
