@@ -3,14 +3,12 @@ scan_stocks.py
 
 Scan SGX, US, crypto, or index tickers on Yahoo and compute:
 - LC (latest close)
-- MA5   (5-day moving average)
 - MA20  (20-day moving average)
 - MA50  (50-day moving average)
 - MA100 (100-day moving average)
 - MA200 (200-day moving average)
 - ΔLC% = 100 * (LC - MA20) / MA20
 - Z-ATR = (LC - MA20) / ATR20
-- ATR5   (5-period Average True Range, simple average of last 5 TR values)
 - ATR20  (20-period Average True Range, simple average of last 20 TR values)
 - ATR200 (200-period Average True Range, simple average of last 200 TR values)
 - ATR% = 100 * ATR20 / LC
@@ -517,7 +515,6 @@ def main():
             if len(closes_valid) == 0:
                 raise ValueError("No close prices in 1Y history")
 
-            ma5 = ma_last(closes_valid, 5)
             ma20 = ma_last(closes_valid, 20)
             ma50 = ma_last(closes_valid, 50)
             ma100 = ma_last(closes_valid, 100)
@@ -526,7 +523,6 @@ def main():
             latest = latest_non_none(closes)
 
             # ATRs using the refactored generic function
-            atr5 = compute_atr(highs, lows, closes, 5)
             atr20 = compute_atr(highs, lows, closes, 20)
             atr50 = compute_atr(highs, lows, closes, 50)
             atr100 = compute_atr(highs, lows, closes, 100)
@@ -570,13 +566,11 @@ def main():
                     "Symbol": disp_code,
                     "Name": name_map.get(sym, sym),
                     "LC": latest,
-                    "MA5": ma5,
                     "MA20": ma20,
                     "MA50": ma50,
                     "MA100": ma100,
                     "MA200": ma200,
                     "Delta%": delta_pct,
-                    "ATR5": atr5,
                     "ATR20": atr20,
                     "ATR50": atr50,
                     "ATR100": atr100,
@@ -710,8 +704,8 @@ def main():
     # ===== One-row compact table (short labels & widths) =====
     header = (
         f"{'Code':<4} {'Name':<10} "
-        f"{'LC':>6} {'MA5':>6} {'MA20':>6} {'MA50':>6} {'MA100':>6} {'MA200':>6} {'ΔLC%':>6} "
-        f"{'ATR5':>6} {'ATR20':>6} {'ATR200':>6} {'Z-ATR':>5} {'ATR%':>5}"
+        f"{'LC':>6} {'MA20':>6} {'MA50':>6} {'MA100':>6} {'MA200':>6} {'ΔLC%':>6} "
+        f"{'ATR20':>6} {'ATR200':>6} {'Z-ATR':>5} {'ATR%':>5}"
     )
     print(header)
     print("-" * len(header))
@@ -721,13 +715,11 @@ def main():
             f"{(r['Symbol'] or '')[:4]:<4} "
             f"{(r['Name'] or '')[:10]:<10} "
             f"{fmt_price(r['LC'],      6)} "
-            f"{fmt_price(r['MA5'],     6)} "
             f"{fmt_price(r['MA20'],    6)} "
             f"{fmt_price(r['MA50'],    6)} "
             f"{fmt_price(r['MA100'],   6)} "
             f"{fmt_price(r['MA200'],   6)} "
             f"{fmtf(r['Delta%'],       6, 2)} "
-            f"{fmt_price(r['ATR5'],    6)} "
             f"{fmt_price(r['ATR20'],   6)} "
             f"{fmt_price(r['ATR200'],  6)} "
             f"{fmtf(r['Z-ATR'],        5, 2)} "
@@ -735,31 +727,7 @@ def main():
         )
         stack = ma_stack_str(r)
         if stack:
-            lc = r.get("LC")
-            ma5 = r.get("MA5")
-            atr5 = r.get("ATR5")
-            rel_bracket = ""
-
-            if is_finite(lc) and is_finite(ma5):
-                if is_finite(atr5) and atr5 > 0:
-                    diff = lc - ma5
-                    if abs(diff) <= 0.5 * atr5:
-                        rel = "≈"
-                    elif diff > 0:
-                        rel = ">"
-                    else:
-                        rel = "<"
-                else:
-                    # Fallback if ATR5 is not usable
-                    if lc > ma5:
-                        rel = ">"
-                    elif lc < ma5:
-                        rel = "<"
-                    else:
-                        rel = "~="
-                rel_bracket = f" (LC {rel} MA5)"
-
-            print(stack + rel_bracket)
+            print(stack)
 
 
 if __name__ == "__main__":
