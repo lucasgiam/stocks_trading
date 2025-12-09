@@ -737,7 +737,14 @@ def main():
         )
         stack = ma_stack_str(r)
         if stack:
-            print(stack)
+            approx = ""
+            lc = r.get("LC")
+            ma5 = r.get("MA5")
+            atr5 = r.get("ATR5")
+            if is_finite(lc) and is_finite(ma5) and is_finite(atr5) and atr5 > 0:
+                if abs(lc - ma5) <= 0.5 * atr5:
+                    approx = " (LC ≈ MA5)"
+            print(stack + approx)
 
 
 if __name__ == "__main__":
