@@ -321,11 +321,10 @@ def fmt_price(x, width=6, max_dp=3):
 
 def ma_stack_str(r):
     """
-    Return a string like '(LC > MA5 > MA20 > MA50 > MA100 > MA200)',
-    ordering LC, MA5, MA20, MA50, MA100, MA200 by actual numeric value (descending).
+    Return a string like '(LC > MA20 > MA50 > MA100 > MA200)',
+    ordering LC, MA20, MA50, MA100, MA200 by actual numeric value (descending).
     """
     lc = r.get("LC")
-    ma5 = r.get("MA5")
     ma20 = r.get("MA20")
     ma50 = r.get("MA50")
     ma100 = r.get("MA100")
@@ -333,7 +332,6 @@ def ma_stack_str(r):
 
     items = [
         ("LC", lc),
-        ("MA5", ma5),
         ("MA20", ma20),
         ("MA50", ma50),
         ("MA100", ma100),
@@ -737,14 +735,31 @@ def main():
         )
         stack = ma_stack_str(r)
         if stack:
-            approx = ""
             lc = r.get("LC")
             ma5 = r.get("MA5")
             atr5 = r.get("ATR5")
-            if is_finite(lc) and is_finite(ma5) and is_finite(atr5) and atr5 > 0:
-                if abs(lc - ma5) <= 0.5 * atr5:
-                    approx = " LC ≈ MA5"
-            print(stack + approx)
+            rel_bracket = ""
+
+            if is_finite(lc) and is_finite(ma5):
+                if is_finite(atr5) and atr5 > 0:
+                    diff = lc - ma5
+                    if abs(diff) <= 0.5 * atr5:
+                        rel = "≈"
+                    elif diff > 0:
+                        rel = ">"
+                    else:
+                        rel = "<"
+                else:
+                    # Fallback if ATR5 is not usable
+                    if lc > ma5:
+                        rel = ">"
+                    elif lc < ma5:
+                        rel = "<"
+                    else:
+                        rel = "~="
+                rel_bracket = f" (LC {rel} MA5)"
+
+            print(stack + rel_bracket)
 
 
 if __name__ == "__main__":
