@@ -743,7 +743,7 @@ def main():
             atr5 = r.get("ATR5")
             if is_finite(lc) and is_finite(ma5) and is_finite(atr5) and atr5 > 0:
                 if abs(lc - ma5) <= 0.5 * atr5:
-                    approx = " (LC ≈ MA5)"
+                    approx = " LC ≈ MA5"
             print(stack + approx)
 
 
