@@ -4,20 +4,16 @@ scan_stocks.py
 Scan SGX, US, crypto, or index tickers on Yahoo and compute:
 - LC (latest close)
 - MA20  (20-day moving average)
-- MA50  (50-day moving average)
-- MA100 (100-day moving average)
 - MA200 (200-day moving average)
-- ΔLC% = 100 * (LC - MA20) / MA20
-- Z-ATR = (LC - MA20) / ATR20
-- ATR20  (20-period Average True Range, simple average of last 20 TR values)
-- ATR200 (200-period Average True Range, simple average of last 200 TR values)
-- ATR% = 100 * ATR20 / LC
+- ΔLC%  = 100 * (LC - MA20) / MA20
+- SD20  (20-day sample standard deviation of closes, ddof=1)
+- Z     = (LC - MA20) / SD20
 
 Usage example:
-  python scan_stocks.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --z_thres 0 --atr_thres 3 --sort_by delta
-  python scan_stocks.py --mode us --symbols AAPL GOOG MSFT NVDA --delta_thres 0 --z_thres 0 --atr_thres 3 --sort_by atr
-  python scan_stocks.py --mode cc --symbols BTC ETH SOL --delta_thres 0 --z_thres 0 --atr_thres 3 --sort_by z
-  python scan_stocks.py --mode id --symbols ^STI ^DJI ^IXIC ^GSPC --delta_thres 0 --z_thres 0 --atr_thres 3 --sort_by delta
+  python scan_stocks.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --z_thres 0 --sort_by delta
+  python scan_stocks.py --mode us --symbols AAPL GOOG MSFT NVDA --delta_thres 0 --z_thres 0 --sort_by z
+  python scan_stocks.py --mode cc --symbols BTC ETH SOL --delta_thres 0 --z_thres 0 --sort_by z
+  python scan_stocks.py --mode id --symbols ^STI ^DJI ^IXIC ^GSPC --delta_thres 0 --z_thres 0 --sort_by delta
 
 Notes:
 - --mode selects:
@@ -30,17 +26,15 @@ Notes:
 - --delta_thres:
     * if X <= 0, keep rows where Delta% <= X
     * if X > 0, keep rows where Delta% > X
-    * or set to 'z' to use per-record Delta% ≤ that record's Z-ATR.
+    * or set to 'z' to use per-record Delta% ≤ that record's Z.
 - --z_thres:
-    * if X <= 0, keep rows where Z-ATR <= X
-    * if X > 0, keep rows where Z-ATR > X.
-- --atr_thres keeps only rows where ATR-LC% >= atr_thres.
+    * if X <= 0, keep rows where Z <= X
+    * if X > 0, keep rows where Z > X.
 - --sort_by controls sorting of the final table:
     * 'delta': sort by ΔLC%; if delta_thres <= 0 or not specified → increasing (most negative first),
                if delta_thres > 0 → decreasing (most positive first).
-    * 'z':     sort by Z-ATR; if z_thres <= 0 or not specified → increasing (most negative first),
+    * 'z':     sort by Z; if z_thres <= 0 or not specified → increasing (most negative first),
                if z_thres > 0 → decreasing (most positive first).
-    * 'atr':   sort by ATR-LC% (ATR20/LC), always in decreasing order (largest first).
 - --reg_filter, when set, applies a long-term regime filter: keep only rows where LC > MA200.
 - --exclude removes the specified symbols from being processed (normalization by mode is applied).
 """
@@ -243,12 +237,12 @@ def mean(vals):
     return sum(vals) / len(vals) if vals else float("nan")
 
 
-def std_pop(vals):
+def std_sample(vals):
     n = len(vals)
-    if n == 0:
+    if n < 2:
         return float("nan")
     m = mean(vals)
-    var = sum((x - m) ** 2 for x in vals) / n
+    var = sum((x - m) ** 2 for x in vals) / (n - 1)
     return math.sqrt(var)
 
 
@@ -258,32 +252,6 @@ def ma_last(closes_valid, n):
         return float("nan")
     window = closes_valid[-n:]
     return mean(window)
-
-
-def compute_atr(highs, lows, closes, window):
-    """ATR(window) as simple average of the last `window` True Range values."""
-    tr_list = []
-    prev_close = None
-    N = max(len(highs), len(lows), len(closes))
-    for i in range(N):
-        h = highs[i] if i < len(highs) else None
-        l = lows[i] if i < len(lows) else None
-        c = closes[i] if i < len(closes) else None
-        if h is None or l is None:
-            prev_close = c if c is not None else prev_close
-            continue
-        if prev_close is None:
-            tr = h - l
-        else:
-            tr = max(h - l, abs(h - prev_close), abs(l - prev_close))
-        if isinstance(tr, (int, float)) and math.isfinite(tr):
-            tr_list.append(tr)
-        prev_close = c if c is not None else prev_close
-
-    if not tr_list:
-        return float("nan")
-    last_n = tr_list[-window:] if len(tr_list) >= window else tr_list
-    return mean(last_n)
 
 
 def latest_non_none(arr):
@@ -319,20 +287,16 @@ def fmt_price(x, width=6, max_dp=3):
 
 def ma_stack_str(r):
     """
-    Return a string like '(LC > MA20 > MA50 > MA100 > MA200)',
-    ordering LC, MA20, MA50, MA100, MA200 by actual numeric value (descending).
+    Return a string like '(LC > MA20 > MA200)',
+    ordering LC, MA20, MA200 by actual numeric value (descending).
     """
     lc = r.get("LC")
     ma20 = r.get("MA20")
-    ma50 = r.get("MA50")
-    ma100 = r.get("MA100")
     ma200 = r.get("MA200")
 
     items = [
         ("LC", lc),
         ("MA20", ma20),
-        ("MA50", ma50),
-        ("MA100", ma100),
         ("MA200", ma200),
     ]
     items = [(name, val) for name, val in items if is_finite(val)]
@@ -377,7 +341,7 @@ def main():
         help=(
             "Delta% filter: if X <= 0, keep rows with Delta% ≤ X; "
             "if X > 0, keep rows with Delta% > X. "
-            "Use 'z' to apply per-record Delta% ≤ Z-ATR."
+            "Use 'z' to apply per-record Delta% ≤ Z."
         ),
     )
     ap.add_argument(
@@ -385,25 +349,18 @@ def main():
         type=float,
         default=None,
         help=(
-            "Z-ATR filter: if X <= 0, keep rows with Z-ATR ≤ X; "
-            "if X > 0, keep rows with Z-ATR > X."
+            "Z filter: if X <= 0, keep rows with Z ≤ X; "
+            "if X > 0, keep rows with Z > X."
         ),
     )
     ap.add_argument(
-        "--atr_thres",
-        type=float,
-        default=None,
-        help="Keep only rows where ATR-LC% (ATR20/LC) >= atr_thres.",
-    )
-    ap.add_argument(
         "--sort_by",
-        choices=["delta", "atr", "z"],
+        choices=["delta", "z"],
         default="delta",
         help=(
-            "Sort output by: 'delta' (ΔLC%), 'atr' (ATR-LC%), or 'z' (Z-ATR). "
+            "Sort output by: 'delta' (ΔLC%) or 'z' (Z). "
             "For 'delta' and 'z': if threshold X <= 0 or not set → increasing (most negative first); "
-            "if X > 0 → decreasing (most positive first). "
-            "For 'atr': always decreasing (largest ATR-LC% first)."
+            "if X > 0 → decreasing (most positive first)."
         ),
     )
     ap.add_argument(
@@ -507,8 +464,6 @@ def main():
     for sym in tqdm(symbols_si, desc="Scanning", unit="symbol"):
         try:
             chart = fetch_chart_1y(sym)
-            highs = chart["high"]
-            lows = chart["low"]
             closes = chart["close"]
 
             closes_valid = [c for c in closes if c is not None]
@@ -516,39 +471,32 @@ def main():
                 raise ValueError("No close prices in 1Y history")
 
             ma20 = ma_last(closes_valid, 20)
-            ma50 = ma_last(closes_valid, 50)
-            ma100 = ma_last(closes_valid, 100)
             ma200 = ma_last(closes_valid, 200)
 
             latest = latest_non_none(closes)
 
-            # ATRs using the refactored generic function
-            atr20 = compute_atr(highs, lows, closes, 20)
-            atr50 = compute_atr(highs, lows, closes, 50)
-            atr100 = compute_atr(highs, lows, closes, 100)
-            atr200 = compute_atr(highs, lows, closes, 200)
+            sd20 = (
+                std_sample(closes_valid[-20:])
+                if len(closes_valid) >= 20
+                else float("nan")
+            )
 
             if is_finite(ma20) and ma20 != 0:
                 delta_pct = 100.0 * (latest - ma20) / ma20
             else:
                 delta_pct = float("nan")
 
-            # Z-ATR = (LC - MA20) / ATR20
-            z_atr = (
-                (latest - ma20) / atr20
+            # Z = (LC - MA20) / SD20
+            z = (
+                (latest - ma20) / sd20
                 if (
                     is_finite(latest)
                     and is_finite(ma20)
-                    and is_finite(atr20)
-                    and atr20 != 0
+                    and is_finite(sd20)
+                    and sd20 != 0
                 )
                 else float("nan")
             )
-
-            if is_finite(atr20) and is_finite(latest) and latest != 0:
-                atr_lc_pct = 100.0 * atr20 / latest
-            else:
-                atr_lc_pct = float("nan")
 
             # Display symbol stripping suffixes/prefixes based on mode
             raw_code = sym
@@ -567,16 +515,10 @@ def main():
                     "Name": name_map.get(sym, sym),
                     "LC": latest,
                     "MA20": ma20,
-                    "MA50": ma50,
-                    "MA100": ma100,
                     "MA200": ma200,
                     "Delta%": delta_pct,
-                    "ATR20": atr20,
-                    "ATR50": atr50,
-                    "ATR100": atr100,
-                    "ATR200": atr200,
-                    "Z-ATR": z_atr,
-                    "ATR-LC%": atr_lc_pct,
+                    "SD20": sd20,
+                    "Z": z,
                 }
             )
         except Exception as e:
@@ -600,14 +542,14 @@ def main():
 
     # Apply optional filters
     if args.delta_thres is not None:
-        # 'z' mode: keep rows where Delta% ≤ that record's Z-ATR (per-record)
+        # 'z' mode: keep rows where Delta% ≤ that record's Z (per-record)
         if isinstance(args.delta_thres, str) and args.delta_thres.lower() == "z":
             filtered = [
                 r
                 for r in filtered
-                if is_finite(r.get("Z-ATR")) and r["Delta%"] <= r["Z-ATR"]
+                if is_finite(r.get("Z")) and r["Delta%"] <= r["Z"]
             ]
-            applied.append("Delta% ≤ Z-ATR (per-record)")
+            applied.append("Delta% ≤ Z (per-record)")
         else:
             thr = float(args.delta_thres)
             if thr <= 0:
@@ -630,25 +572,16 @@ def main():
             filtered = [
                 r
                 for r in filtered
-                if is_finite(r.get("Z-ATR")) and r["Z-ATR"] <= zt
+                if is_finite(r.get("Z")) and r["Z"] <= zt
             ]
-            applied.append(f"Z-ATR ≤ {zt:.2f}")
+            applied.append(f"Z ≤ {zt:.2f}")
         else:
             filtered = [
                 r
                 for r in filtered
-                if is_finite(r.get("Z-ATR")) and r["Z-ATR"] > zt
+                if is_finite(r.get("Z")) and r["Z"] > zt
             ]
-            applied.append(f"Z-ATR > {zt:.2f}")
-    if args.atr_thres is not None:
-        vt = float(args.atr_thres)
-
-        def keep_volt(r):
-            v = r.get("ATR-LC%", float("nan"))
-            return is_finite(v) and (v >= vt)
-
-        filtered = [r for r in filtered if keep_volt(r)]
-        applied.append(f"ATR-LC% ≥ {vt:.2f}%")
+            applied.append(f"Z > {zt:.2f}")
 
     # ----- Sorting -----
     sort_by = args.sort_by
@@ -670,18 +603,15 @@ def main():
             # no numeric threshold -> increasing (most negative first)
             descending = False
     elif sort_by == "z":
-        metric_key = "Z-ATR"
+        metric_key = "Z"
         if args.z_thres is not None:
             zt = float(args.z_thres)
             if zt > 0:
-                descending = True  # most positive Z-ATR first
+                descending = True  # most positive Z first
             else:
-                descending = False  # most negative Z-ATR first
+                descending = False  # most negative Z first
         else:
             descending = False
-    elif sort_by == "atr":
-        metric_key = "ATR-LC%"
-        descending = True  # always largest ATR-LC% first
 
     if not descending:
         def sort_key(r):
@@ -703,31 +633,26 @@ def main():
 
     # ===== One-row compact table (short labels & widths) =====
     header = (
-        f"{'Code':<4} {'Name':<10} "
-        f"{'LC':>6} {'MA20':>6} {'MA50':>6} {'MA100':>6} {'MA200':>6} {'ΔLC%':>6} "
-        f"{'ATR20':>6} {'ATR200':>6} {'Z-ATR':>5} {'ATR%':>5}"
+        f"{'Code':<6} {'Name':<25} "
+        f"{'LC':>6} {'MA20':>6} {'MA200':>6} {'ΔLC%':>6} {'SD20':>6} {'Z':>5}"
     )
     print(header)
     print("-" * len(header))
 
     for r in filtered:
         print(
-            f"{(r['Symbol'] or '')[:4]:<4} "
-            f"{(r['Name'] or '')[:10]:<10} "
+            f"{(r['Symbol'] or '')[:6]:<6} "
+            f"{(r['Name'] or '')[:25]:<25} "
             f"{fmt_price(r['LC'],      6)} "
             f"{fmt_price(r['MA20'],    6)} "
-            f"{fmt_price(r['MA50'],    6)} "
-            f"{fmt_price(r['MA100'],   6)} "
             f"{fmt_price(r['MA200'],   6)} "
             f"{fmtf(r['Delta%'],       6, 2)} "
-            f"{fmt_price(r['ATR20'],   6)} "
-            f"{fmt_price(r['ATR200'],  6)} "
-            f"{fmtf(r['Z-ATR'],        5, 2)} "
-            f"{fmtf(r['ATR-LC%'],      5, 2)}"
+            f"{fmt_price(r['SD20'],    6)} "
+            f"{fmtf(r['Z'],            5, 2)}"
         )
-        stack = ma_stack_str(r)
-        if stack:
-            print(stack)
+        # stack = ma_stack_str(r)
+        # if stack:
+        #     print(stack)
 
 
 if __name__ == "__main__":
