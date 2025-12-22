@@ -642,7 +642,7 @@ def main():
     for r in filtered:
         print(
             f"{(r['Symbol'] or '')[:6]:<6} "
-            f"{(r['Name'] or '')[:25]:<25} "
+            f"{(r['Name'] or '')[:42]:<42} "
             f"{fmt_price(r['LC'],      6)} "
             f"{fmt_price(r['MA20'],    6)} "
             f"{fmt_price(r['MA200'],   6)} "
