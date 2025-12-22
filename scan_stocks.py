@@ -633,7 +633,7 @@ def main():
 
     # ===== One-row compact table (short labels & widths) =====
     header = (
-        f"{'Code':<6} {'Name':<25} "
+        f"{'Code':<6} {'Name':<42} "
         f"{'LC':>6} {'MA20':>6} {'MA200':>6} {'ΔLC%':>6} {'SD20':>6} {'Z':>5}"
     )
     print(header)
