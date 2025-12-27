@@ -13,21 +13,22 @@ Usage example:
   python scan_stocks.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --z_thres 0 --sort_by delta
   python scan_stocks.py --mode us --symbols AAPL GOOG MSFT NVDA --delta_thres 0 --z_thres 0 --sort_by z
   python scan_stocks.py --mode cc --symbols BTC ETH SOL --delta_thres 0 --z_thres 0 --sort_by z
-  python scan_stocks.py --mode id --symbols ^STI ^DJI ^IXIC ^GSPC --delta_thres 0 --z_thres 0 --sort_by delta
-  python scan_stocks.py --mode id --symbols ^STI ^DJI ^IXIC ^GSPC --delta_thres 0 --z_thres 0 --sort_by none
+  python scan_stocks.py --mode id --symbols ^STI ^DJI ^NPX ^SPX --sort_by none
 
 Notes:
 - --mode selects:
     'sg' for SGX (codes like 'D05', 'C6L'; mapped to Yahoo by appending '.SI'),
     'us' for US stocks (codes like 'AAPL', 'GOOG'; used as-is),
     'cc' for cryptocurrencies (codes like 'BTC', 'ETH'; mapped to Yahoo by appending '-USD'),
-    'id' for indexes (codes like '^STI', '^DJI'; used as-is for Yahoo, but '^' stripped in display).
+    'id' for indexes (codes like '^STI', '^DJI'; used as-is for Yahoo, but '^' stripped in display; any dot-suffix
+         tickers (e.g. ES3.SI, 1329.T, 000001.SS) are also accepted and their suffix is stripped in display).
 - --symbols takes space-separated codes (no quotes), or 'auto' to load from all_<mode>_stocks.txt.
-  For --mode id, if --symbols is omitted/empty, the default symbols used are: ^STI, ^DJI, ^IXIC, ^GSPC.
 - --delta_thres:
     * if X <= 0, keep rows where Delta% <= X
     * if X > 0, keep rows where Delta% > X
-    * or set to 'z' to use per-record Delta% ≤ that record's Z.
+    * or set to 'z' to use per-record rule:
+        - if Z <= 0 then Delta% <= Z
+        - if Z > 0 then Delta% >= Z
 - --z_thres:
     * if X <= 0, keep rows where Z <= X
     * if X > 0, keep rows where Z > X.
@@ -37,7 +38,9 @@ Notes:
     * 'z':     sort by Z; if z_thres <= 0 or not specified → increasing (most negative first),
                if z_thres > 0 → decreasing (most positive first).
     * 'none':  no sorting; keep scan/order as processed.
-- --reg_filter, when set, applies a long-term regime filter: keep only rows where LC > MA200.
+- --reg_filter, when set, applies a long-term regime filter:
+    * 'bull' keeps only rows where LC >= MA200
+    * 'bear' keeps only rows where LC < MA200
 - --exclude removes the specified symbols from being processed (normalization by mode is applied).
 """
 
@@ -171,7 +174,7 @@ def ensure_idx(ticker: str) -> str:
     t = ticker.strip().upper()
     if t.startswith("^"):
         return t
-    if t.endswith(".SI"):
+    if re.search(r"\.[A-Z0-9]+$", t):
         return t
     return t
 
@@ -345,7 +348,7 @@ def main():
         help=(
             "Delta% filter: if X <= 0, keep rows with Delta% ≤ X; "
             "if X > 0, keep rows with Delta% > X. "
-            "Use 'z' to apply per-record Delta% ≤ Z."
+            "Use 'z' to apply per-record rule: if Z ≤ 0 then Delta% ≤ Z, else Delta% ≥ Z."
         ),
     )
     ap.add_argument(
@@ -383,13 +386,14 @@ def main():
     )
     ap.add_argument(
         "--reg_filter",
-        action="store_true",
-        help="If set, apply long-term regime filter: keep only rows where LC > MA200.",
+        choices=["bull", "bear"],
+        default=None,
+        help="If set, apply long-term regime filter: 'bull' keeps LC >= MA200; 'bear' keeps LC < MA200.",
     )
     args = ap.parse_args()
 
-    # For non-index modes, symbols must be provided (unless using 'auto' later).
-    if not args.symbols and args.mode != "id":
+    # Symbols must be provided for all modes (unless using 'auto' later).
+    if not args.symbols:
         print(
             "ERROR: No symbols provided. Please supply at least one via --symbols.",
             file=sys.stderr,
@@ -422,11 +426,7 @@ def main():
             )
             return
     else:
-        # For index mode with no symbols, use default set
-        if args.mode == "id" and not args.symbols:
-            input_symbols = ["^STI", "^DJI", "^NDX", "^SPX", "ES3.SI", "DIA", "QQQ", "SPY"]
-        else:
-            input_symbols = args.symbols
+        input_symbols = args.symbols
 
     exclude_symbols = args.exclude if args.exclude else []
 
@@ -511,8 +511,8 @@ def main():
             elif args.mode == "id":
                 if raw_code.startswith("^"):
                     disp_code = raw_code[1:]
-                elif raw_code.endswith(".SI"):
-                    disp_code = raw_code.removesuffix(".SI")
+                elif "." in raw_code:
+                    disp_code = raw_code.rsplit(".", 1)[0]
                 else:
                     disp_code = raw_code
             else:
@@ -540,25 +540,40 @@ def main():
 
     applied = []
 
-    # Regime filter: LC > MA200
+    # Regime filter
     if args.reg_filter:
-        filtered = [
-            r
-            for r in filtered
-            if is_finite(r.get("LC")) and is_finite(r.get("MA200")) and r["LC"] > r["MA200"]
-        ]
-        applied.append("LC > MA200")
+        if args.reg_filter == "bull":
+            filtered = [
+                r
+                for r in filtered
+                if is_finite(r.get("LC")) and is_finite(r.get("MA200")) and r["LC"] >= r["MA200"]
+            ]
+            applied.append("LC >= MA200 (bull)")
+        elif args.reg_filter == "bear":
+            filtered = [
+                r
+                for r in filtered
+                if is_finite(r.get("LC")) and is_finite(r.get("MA200")) and r["LC"] < r["MA200"]
+            ]
+            applied.append("LC < MA200 (bear)")
 
     # Apply optional filters
     if args.delta_thres is not None:
-        # 'z' mode: keep rows where Delta% ≤ that record's Z (per-record)
+        # 'z' mode: per-record rule:
+        #   if Z <= 0: keep Delta% <= Z
+        #   if Z > 0 : keep Delta% >= Z
         if isinstance(args.delta_thres, str) and args.delta_thres.lower() == "z":
             filtered = [
                 r
                 for r in filtered
-                if is_finite(r.get("Z")) and r["Delta%"] <= r["Z"]
+                if is_finite(r.get("Z"))
+                and is_finite(r.get("Delta%"))
+                and (
+                    (r["Z"] <= 0 and r["Delta%"] <= r["Z"])
+                    or (r["Z"] > 0 and r["Delta%"] >= r["Z"])
+                )
             ]
-            applied.append("Delta% ≤ Z (per-record)")
+            applied.append("Delta% vs Z (per-record, sign-aware)")
         else:
             thr = float(args.delta_thres)
             if thr <= 0:
