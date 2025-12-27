@@ -37,7 +37,7 @@ Notes:
                if delta_thres > 0 → decreasing (most positive first).
     * 'z':     sort by Z; if z_thres <= 0 or not specified → increasing (most negative first),
                if z_thres > 0 → decreasing (most positive first).
-    * 'none':  no sorting; keep scan/order as processed.
+    * 'none':  no sorting; keep scan/order as processed (default).
 - --reg_filter, when set, applies a long-term regime filter:
     * 'bull' keeps only rows where LC >= MA200
     * 'bear' keeps only rows where LC < MA200
@@ -363,7 +363,7 @@ def main():
     ap.add_argument(
         "--sort_by",
         choices=["delta", "z", "none"],
-        default="delta",
+        default="none",
         help=(
             "Sort output by: 'delta' (ΔLC%) or 'z' (Z) or 'none' (no sorting; keep scan order). "
             "For 'delta' and 'z': if threshold X <= 0 or not set → increasing (most negative first); "
