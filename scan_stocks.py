@@ -14,6 +14,7 @@ Usage example:
   python scan_stocks.py --mode us --symbols AAPL GOOG MSFT NVDA --delta_thres 0 --z_thres 0 --sort_by z
   python scan_stocks.py --mode cc --symbols BTC ETH SOL --delta_thres 0 --z_thres 0 --sort_by z
   python scan_stocks.py --mode id --symbols ^STI ^DJI ^IXIC ^GSPC --delta_thres 0 --z_thres 0 --sort_by delta
+  python scan_stocks.py --mode id --symbols ^STI ^DJI ^IXIC ^GSPC --delta_thres 0 --z_thres 0 --sort_by none
 
 Notes:
 - --mode selects:
@@ -35,6 +36,7 @@ Notes:
                if delta_thres > 0 → decreasing (most positive first).
     * 'z':     sort by Z; if z_thres <= 0 or not specified → increasing (most negative first),
                if z_thres > 0 → decreasing (most positive first).
+    * 'none':  no sorting; keep scan/order as processed.
 - --reg_filter, when set, applies a long-term regime filter: keep only rows where LC > MA200.
 - --exclude removes the specified symbols from being processed (normalization by mode is applied).
 """
@@ -161,15 +163,17 @@ def ensure_si(ticker: str) -> str:
 
 
 def ensure_cc(ticker: str) -> str:
-    """Normalize crypto tickers to Yahoo's '-USD' format."""
     t = ticker.strip().upper()
     return t if t.endswith("-USD") else f"{t}-USD"
 
 
 def ensure_idx(ticker: str) -> str:
-    """Normalize index tickers to Yahoo's '^CODE' format."""
     t = ticker.strip().upper()
-    return t if t.startswith("^") else f"^{t}"
+    if t.startswith("^"):
+        return t
+    if t.endswith(".SI"):
+        return t
+    return t
 
 
 def try_quote_names(symbols_si):
@@ -355,10 +359,10 @@ def main():
     )
     ap.add_argument(
         "--sort_by",
-        choices=["delta", "z"],
+        choices=["delta", "z", "none"],
         default="delta",
         help=(
-            "Sort output by: 'delta' (ΔLC%) or 'z' (Z). "
+            "Sort output by: 'delta' (ΔLC%) or 'z' (Z) or 'none' (no sorting; keep scan order). "
             "For 'delta' and 'z': if threshold X <= 0 or not set → increasing (most negative first); "
             "if X > 0 → decreasing (most positive first)."
         ),
@@ -420,7 +424,7 @@ def main():
     else:
         # For index mode with no symbols, use default set
         if args.mode == "id" and not args.symbols:
-            input_symbols = ["^STI", "^DJI", "^IXIC", "^GSPC"]
+            input_symbols = ["^STI", "^DJI", "^NDX", "^SPX", "ES3.SI", "DIA", "QQQ", "SPY"]
         else:
             input_symbols = args.symbols
 
@@ -505,7 +509,12 @@ def main():
             elif args.mode == "cc":
                 disp_code = raw_code.removesuffix("-USD")
             elif args.mode == "id":
-                disp_code = raw_code[1:] if raw_code.startswith("^") else raw_code
+                if raw_code.startswith("^"):
+                    disp_code = raw_code[1:]
+                elif raw_code.endswith(".SI"):
+                    disp_code = raw_code.removesuffix(".SI")
+                else:
+                    disp_code = raw_code
             else:
                 disp_code = raw_code
 
@@ -585,44 +594,49 @@ def main():
 
     # ----- Sorting -----
     sort_by = args.sort_by
-    descending = False
-    metric_key = "Delta%"  # default
 
-    if sort_by == "delta":
-        metric_key = "Delta%"
-        # direction based on delta_thres (numeric only)
-        if args.delta_thres is not None and not (
-            isinstance(args.delta_thres, str) and args.delta_thres.lower() == "z"
-        ):
-            thr = float(args.delta_thres)
-            if thr > 0:
-                descending = True  # most positive first
+    if sort_by != "none":
+        descending = False
+        metric_key = "Delta%"  # default
+
+        if sort_by == "delta":
+            metric_key = "Delta%"
+            # direction based on delta_thres (numeric only)
+            if args.delta_thres is not None and not (
+                isinstance(args.delta_thres, str) and args.delta_thres.lower() == "z"
+            ):
+                thr = float(args.delta_thres)
+                if thr > 0:
+                    descending = True  # most positive first
+                else:
+                    descending = False  # most negative first
             else:
-                descending = False  # most negative first
-        else:
-            # no numeric threshold -> increasing (most negative first)
-            descending = False
-    elif sort_by == "z":
-        metric_key = "Z"
-        if args.z_thres is not None:
-            zt = float(args.z_thres)
-            if zt > 0:
-                descending = True  # most positive Z first
+                # no numeric threshold -> increasing (most negative first)
+                descending = False
+        elif sort_by == "z":
+            metric_key = "Z"
+            if args.z_thres is not None:
+                zt = float(args.z_thres)
+                if zt > 0:
+                    descending = True  # most positive Z first
+                else:
+                    descending = False  # most negative Z first
             else:
-                descending = False  # most negative Z first
+                descending = False
+
+        if not descending:
+
+            def sort_key(r):
+                v = r.get(metric_key)
+                return (0, v) if is_finite(v) else (1, float("inf"))
+
         else:
-            descending = False
 
-    if not descending:
-        def sort_key(r):
-            v = r.get(metric_key)
-            return (0, v) if is_finite(v) else (1, float("inf"))
-    else:
-        def sort_key(r):
-            v = r.get(metric_key)
-            return (0, -v) if is_finite(v) else (1, float("inf"))
+            def sort_key(r):
+                v = r.get(metric_key)
+                return (0, -v) if is_finite(v) else (1, float("inf"))
 
-    filtered.sort(key=sort_key)
+        filtered.sort(key=sort_key)
 
     # ==== Summary line ====
     applied_str = "; ".join(applied) if applied else "no extra filters"
