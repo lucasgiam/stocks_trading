@@ -739,7 +739,7 @@ def main():
     header = (
         f"{'Code':<6} {'Name':<22} "
         f"{'LC':>6} {'MA20':>6} {'MA200':>6} {'ΔLC%':>6} {'SD20':>6} "
-        f"{'Z':>5} {'ATR20':>6} {'ATR200':>6} {'ATR20%':>6}"
+        f"{'Z':>5} {'ATR20':>6} {'ATR200':>6} {'ATR%':>5}"
     )
     print(header)
     print("-" * len(header))
@@ -753,10 +753,10 @@ def main():
             f"{fmt_price(r['MA200'],   6)} "
             f"{fmtf(r['Delta%'],       6, 2)} "
             f"{fmt_price(r['SD20'],    6)} "
-            f"{fmtf(r['Z'],            5, 2)}"
+            f"{fmtf(r['Z'],            5, 2)} "
             f"{fmt_price(r['ATR20'],   6)} "
             f"{fmt_price(r['ATR200'],  6)} "
-            f"{fmtf(r['ATR%'],         6, 2)} "
+            f"{fmtf(r['ATR%'],         5, 2)} "
         )
         # stack = ma_stack_str(r)
         # if stack:
