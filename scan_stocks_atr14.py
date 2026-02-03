@@ -9,6 +9,7 @@ Scan SGX, US, crypto, or index tickers on Yahoo and compute:
 - ATR(N): simple average of TR for past N days
 - ATR% = ATR14 / LC * 100%
 - Z-ATR = (LC - PC) / ATR14
+- TR>ATR% = fraction of the past 200 days where TR > ATR14 (percentage)
 
 Usage example:
   python scan_stocks.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --z_thres 0 --sort_by delta
@@ -416,7 +417,7 @@ def main():
         "--atr_thres",
         type=float,
         default=None,
-        help="ATR% filter (where ATR% = 100*ATR14/LC): if set, keep rows with ATR% ≥ this threshold (e.g., 5 means keep ATR% ≥ 5%).",
+        help="ATR% filter (where ATR% = 100*ATR14/LC): if set, keep rows where ATR% ≥ this threshold (e.g., 5 means keep ATR% ≥ 5%).",
     )
     ap.add_argument(
         "--sort_by",
@@ -564,6 +565,23 @@ def main():
                 else float("nan")
             )
 
+            # TR>ATR% = fraction of past 200 days where TR > ATR14 (percentage)
+            trs = []
+            m = min(len(highs), len(lows), len(closes))
+            if m >= 2:
+                for i in range(1, m):
+                    hi = highs[i]
+                    lo = lows[i]
+                    prev_c = closes[i - 1]
+                    tr = true_range(hi, lo, prev_c)
+                    if is_finite(tr):
+                        trs.append(tr)
+            if is_finite(atr14) and len(trs) >= 200:
+                last200 = trs[-200:]
+                tr_gt_atr_pct = 100.0 * sum(1 for tr in last200 if tr > atr14) / len(last200)
+            else:
+                tr_gt_atr_pct = float("nan")
+
             # Z = (LC - PC) / ATR14
             z = (
                 (latest - prev_close) / atr14
@@ -605,6 +623,7 @@ def main():
                     "ATR14": atr14,
                     "ATR200": atr200,
                     "ATR%": atr_pct,
+                    "TR>ATR%": tr_gt_atr_pct,
                     "Z": z,
                 }
             )
@@ -754,7 +773,7 @@ def main():
     header = (
         f"{'Code':<6} {'Name':<22} "
         f"{'LC':>6} {'PC':>6} {'ΔLC%':>6} {'Z-ATR':>5} "
-        f"{'ATR14':>6} {'ATR200':>6} {'ATR%':>5}"
+        f"{'ATR14':>6} {'ATR200':>6} {'ATR%':>5} {'TR>ATR%':>7}"
     )
     print(header)
     print("-" * len(header))
@@ -770,6 +789,7 @@ def main():
             f"{fmt_price(r['ATR14'],   6)} "
             f"{fmt_price(r['ATR200'],  6)} "
             f"{fmtf(r['ATR%'],         5, 2)} "
+            f"{fmtf(r['TR>ATR%'],      7, 2)} "
         )
         # stack = ma_stack_str(r)
         # if stack:
