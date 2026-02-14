@@ -1,5 +1,5 @@
 """
-scan_stocks.py
+scan_stocks_atr14.py
 
 Scan SGX, US, crypto, or index tickers on Yahoo and compute:
 - LC (latest close)
@@ -557,6 +557,8 @@ def main():
 
             # ATR14 / ATR200 (simple average of TR over past N days)
             atr14 = atr_last_from_ohlc(highs, lows, closes, 14)
+            atr50 = atr_last_from_ohlc(highs, lows, closes, 50)
+            atr100 = atr_last_from_ohlc(highs, lows, closes, 100)
             atr200 = atr_last_from_ohlc(highs, lows, closes, 200)
 
             atr_pct = (
@@ -621,6 +623,8 @@ def main():
                     "Delta%": delta_pct,
                     "SD20": sd20,
                     "ATR14": atr14,
+                    "ATR50": atr50,
+                    "ATR100": atr100,
                     "ATR200": atr200,
                     "ATR%": atr_pct,
                     "TR>ATR%": tr_gt_atr_pct,
@@ -771,9 +775,8 @@ def main():
 
     # ===== One-row compact table (short labels & widths) =====
     header = (
-        f"{'Code':<6} {'Name':<22} "
-        f"{'LC':>6} {'PC':>6} {'ΔLC%':>6} {'Z-ATR':>5} "
-        f"{'ATR14':>6} {'ATR200':>6} {'ATR%':>5} {'TR>ATR%':>7}"
+        f"{'Code':<6} {'Name':<22} {'LC':>6} "
+        f"{'ATR14':>6} {'ATR50':>6} {'ATR100':>6} {'ATR200':>6} {'ATR%':>5} {'TR>ATR%':>7}"
     )
     print(header)
     print("-" * len(header))
@@ -783,18 +786,13 @@ def main():
             f"{(r['Symbol'] or '')[:6]:<6} "
             f"{(r['Name'] or '')[:22]:<22} "
             f"{fmt_price(r['LC'],      6)} "
-            f"{fmt_price(r['PC'],      6)} "
-            f"{fmtf(r['Delta%'],       6, 2)} "
-            f"{fmtf(r['Z'],            5, 2)} "
             f"{fmt_price(r['ATR14'],   6)} "
+            f"{fmt_price(r['ATR50'],   6)} "
+            f"{fmt_price(r['ATR100'],  6)} "
             f"{fmt_price(r['ATR200'],  6)} "
             f"{fmtf(r['ATR%'],         5, 2)} "
             f"{fmtf(r['TR>ATR%'],      7, 2)} "
         )
-        # stack = ma_stack_str(r)
-        # if stack:
-        #     print(stack)
-
 
 if __name__ == "__main__":
     main()

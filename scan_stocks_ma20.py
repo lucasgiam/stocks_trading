@@ -1,5 +1,5 @@
 """
-scan_stocks.py
+scan_stocks_ma20.py
 
 Scan SGX, US, crypto, or index tickers on Yahoo and compute:
 - LC (latest close)
