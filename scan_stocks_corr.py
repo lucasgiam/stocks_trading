@@ -289,7 +289,25 @@ def main():
     )
     args = ap.parse_args()
 
-    input_symbols = args.symbols
+    # Handle 'auto' mode for symbols: load from all_<mode>_stocks.txt
+    if args.symbols and len(args.symbols) == 1 and args.symbols[0].lower() == "auto":
+        auto_file = f"all_{args.mode}_stocks.txt"
+        try:
+            with open(auto_file, "r", encoding="utf-8") as f:
+                text = f.read()
+        except FileNotFoundError:
+            print(f"ERROR: Auto symbols file not found: {auto_file}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"ERROR: Failed to read auto symbols file {auto_file}: {e}", file=sys.stderr)
+            sys.exit(1)
+        input_symbols = text.split()
+        if not input_symbols:
+            print(f"ERROR: Auto symbols file {auto_file} contains no symbols.", file=sys.stderr)
+            sys.exit(1)
+    else:
+        input_symbols = args.symbols
+
     exclude_symbols = args.exclude or []
 
     if args.mode == "sg":
