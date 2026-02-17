@@ -557,6 +557,7 @@ def main():
 
             # ATR14 / ATR200 (simple average of TR over past N days)
             atr14 = atr_last_from_ohlc(highs, lows, closes, 14)
+            atr25 = atr_last_from_ohlc(highs, lows, closes, 25)
             atr50 = atr_last_from_ohlc(highs, lows, closes, 50)
             atr100 = atr_last_from_ohlc(highs, lows, closes, 100)
             atr200 = atr_last_from_ohlc(highs, lows, closes, 200)
@@ -623,6 +624,7 @@ def main():
                     "Delta%": delta_pct,
                     "SD20": sd20,
                     "ATR14": atr14,
+                    "ATR25": atr25,
                     "ATR50": atr50,
                     "ATR100": atr100,
                     "ATR200": atr200,
@@ -776,7 +778,7 @@ def main():
     # ===== One-row compact table (short labels & widths) =====
     header = (
         f"{'Code':<6} {'Name':<22} {'LC':>6} "
-        f"{'ATR14':>6} {'ATR50':>6} {'ATR100':>6} {'ATR200':>6} {'ATR%':>5} {'TR>ATR%':>7}"
+        f"{'ATR14':>6} {'ATR25':>6} {'ATR50':>6} {'ATR100':>6} {'ATR200':>6} {'ATR%':>5} {'TR>ATR%':>7}"
     )
     print(header)
     print("-" * len(header))
@@ -787,6 +789,7 @@ def main():
             f"{(r['Name'] or '')[:22]:<22} "
             f"{fmt_price(r['LC'],      6)} "
             f"{fmt_price(r['ATR14'],   6)} "
+            f"{fmt_price(r['ATR25'],   6)} "
             f"{fmt_price(r['ATR50'],   6)} "
             f"{fmt_price(r['ATR100'],  6)} "
             f"{fmt_price(r['ATR200'],  6)} "
