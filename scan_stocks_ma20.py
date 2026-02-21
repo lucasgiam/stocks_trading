@@ -3,11 +3,13 @@ scan_stocks_ma20.py
 
 Scan SGX, US, crypto, or index tickers on Yahoo and compute:
 - LC (latest close)
-- MA20  (20-day moving average)
-- MA200 (200-day moving average)
-- ΔLC%  = 100 * (LC - MA20) / MA20
-- SD20  (20-day sample standard deviation of closes, ddof=1)
-- Z     = (LC - MA20) / SD20
+- MA20   (20-day moving average)
+- MA200  (200-day moving average)
+- ΔLC%   = 100 * (LC - MA20) / MA20
+- SD20   (20-day sample standard deviation of closes, ddof=1)
+- Z      = (LC - MA20) / SD20
+- ATR14  (simple average of TR for past 14 days)
+- ATR%   = ATR14 / LC * 100
 
 Usage example:
   python scan_stocks.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --z_thres 0 --sort_by delta
@@ -272,6 +274,41 @@ def is_finite(x):
     return isinstance(x, (int, float)) and math.isfinite(x)
 
 
+# ---------- TR / ATR (simple average of TR over past N days) ----------
+def true_range(high, low, prev_close):
+    """
+    True Range for one day:
+      TR = max(high-low, abs(high-prev_close), abs(low-prev_close))
+    Returns NaN if inputs are not finite.
+    """
+    if not (is_finite(high) and is_finite(low) and is_finite(prev_close)):
+        return float("nan")
+    return max(high - low, abs(high - prev_close), abs(low - prev_close))
+
+
+def atr_last_from_ohlc(highs, lows, closes, n):
+    """
+    Compute ATR(N) as simple average of the last N True Range values.
+    Requires at least N valid TR values (which requires prev_close).
+    """
+    trs = []
+    m = min(len(highs), len(lows), len(closes))
+    if m < 2:
+        return float("nan")
+
+    for i in range(1, m):
+        hi = highs[i]
+        lo = lows[i]
+        prev_c = closes[i - 1]
+        tr = true_range(hi, lo, prev_c)
+        if is_finite(tr):
+            trs.append(tr)
+
+    if len(trs) < n:
+        return float("nan")
+    return mean(trs[-n:])
+
+
 # ---------- compact one-row table ----------
 def fmtf(x, w, p):
     return f"{x:>{w}.{p}f}" if is_finite(x) else f"{'nan':>{w}}"
@@ -356,8 +393,8 @@ def main():
         type=float,
         default=None,
         help=(
-            "Z filter: if X <= 0, keep rows with Z ≤ X; "
-            "if X > 0, keep rows with Z > X."
+            "Z filter: if X <= 0, keep rows where Z ≤ X; "
+            "if X > 0, keep rows where Z > X."
         ),
     )
     ap.add_argument(
@@ -469,6 +506,8 @@ def main():
         try:
             chart = fetch_chart_1y(sym)
             closes = chart["close"]
+            highs = chart["high"]
+            lows = chart["low"]
 
             closes_valid = [c for c in closes if c is not None]
             if len(closes_valid) == 0:
@@ -502,6 +541,16 @@ def main():
                 else float("nan")
             )
 
+            # ATR14 (simple average of last 14 TR values)
+            atr14 = atr_last_from_ohlc(highs, lows, closes, 14)
+
+            # ATR% = ATR14 / LC * 100
+            atr_pct = (
+                100.0 * atr14 / latest
+                if is_finite(atr14) and is_finite(latest) and latest != 0
+                else float("nan")
+            )
+
             # Display symbol stripping suffixes/prefixes based on mode
             raw_code = sym
             if args.mode == "sg":
@@ -528,6 +577,8 @@ def main():
                     "Delta%": delta_pct,
                     "SD20": sd20,
                     "Z": z,
+                    "ATR14": atr14,
+                    "ATR%": atr_pct,
                 }
             )
         except Exception as e:
@@ -663,7 +714,7 @@ def main():
     # ===== One-row compact table (short labels & widths) =====
     header = (
         f"{'Code':<6} {'Name':<42} "
-        f"{'LC':>6} {'MA20':>6} {'MA200':>6} {'ΔLC%':>6} {'SD20':>6} {'Z':>5}"
+        f"{'LC':>6} {'MA20':>6} {'MA200':>6} {'ΔLC%':>6} {'SD20':>6} {'Z':>5} {'ATR14':>6} {'ATR%':>5}"
     )
     print(header)
     print("-" * len(header))
@@ -677,7 +728,9 @@ def main():
             f"{fmt_price(r['MA200'],   6)} "
             f"{fmtf(r['Delta%'],       6, 2)} "
             f"{fmt_price(r['SD20'],    6)} "
-            f"{fmtf(r['Z'],            5, 2)}"
+            f"{fmtf(r['Z'],            5, 2)} "
+            f"{fmt_price(r['ATR14'],   6)} "
+            f"{fmtf(r['ATR%'],         5, 2)}"
         )
         # stack = ma_stack_str(r)
         # if stack:
