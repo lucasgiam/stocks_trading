@@ -1,9 +1,9 @@
 """
 scan_mr_backtest.py
 
-Mean-reversion backtester: for each symbol, pulls 5 years of daily OHLCV from
-Yahoo Finance and simulates how the stock has historically behaved after touching
-a reference price level.
+Mean-reversion backtester: for each symbol, pulls daily OHLCV from Yahoo Finance
+(lookback window configurable via --window, default 1 year) and simulates how the
+stock has historically behaved after touching a reference price level.
 
 For each OHLC touch of start_price one episode is generated:
   Entry    : earliest day where start_price falls within the day's OHLC (low <= sp <= high)
@@ -20,6 +20,7 @@ Usage example:
   python scan_mr_backtest.py --mode us --symbols TSLA NVDA MSFT --start_price 360 190 400
   python scan_mr_backtest.py --mode cc --symbols BTC ETH --tp_level 0.2
   python scan_mr_backtest.py --mode sg --symbols auto --success_thres 3 --sort_by successes
+  python scan_mr_backtest.py --mode us --symbols AAPL --window 3
 
 Notes:
 - --mode selects:
@@ -57,6 +58,7 @@ Notes:
     * default: 80.
 - --exclude removes the specified symbols from being processed (mode normalization is applied).
 - --sleep sets the delay in seconds between Yahoo Finance requests (default: 0.5).
+- --window sets the historical lookback period in years (any positive integer, default: 1).
 """
 
 from __future__ import annotations
@@ -88,9 +90,9 @@ YF_QUOTE_URL  = (
 YF_SEARCH_URL = (
     "https://query2.finance.yahoo.com/v1/finance/search?q={symbol}&quotesCount=1"
 )
-YF_CHART_5Y_URL = (
+YF_CHART_URL = (
     "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-    "?interval=1d&range=5y&includeAdjustedClose=true"
+    "?interval=1d&range={range}&includeAdjustedClose=true"
 )
 
 UA = (
@@ -240,9 +242,9 @@ def get_name_map(symbols: list[str]) -> dict:
 
 # ─── Chart fetch ──────────────────────────────────────────────────────────────
 
-def fetch_chart_5y(symbol: str) -> dict:
-    """Fetch 5 years of daily OHLCV + Unix timestamps from Yahoo Finance."""
-    payload = http_get_json(YF_CHART_5Y_URL.format(symbol=symbol))
+def fetch_chart(symbol: str, window: str = "1y") -> dict:
+    """Fetch daily OHLCV + Unix timestamps from Yahoo Finance for the given window."""
+    payload = http_get_json(YF_CHART_URL.format(symbol=symbol, range=window))
     result  = payload.get("chart", {}).get("result", []) or []
     if not result:
         raise ValueError("No chart result returned")
@@ -628,6 +630,12 @@ def main():
         ),
     )
     ap.add_argument(
+        "--window",
+        type=int,
+        default=1,
+        help="Lookback window in years for historical data (default: 1).",
+    )
+    ap.add_argument(
         "--sleep",
         type=float,
         default=0.5,
@@ -651,6 +659,10 @@ def main():
         ),
     )
     args = ap.parse_args()
+
+    if args.window < 1:
+        ap.error("--window must be a positive integer (years).")
+    args.window = f"{args.window}y"
 
     is_auto = (
         args.symbols
@@ -763,7 +775,7 @@ def main():
         total=len(symbols_si),
     ):
         try:
-            chart = fetch_chart_5y(sym)
+            chart = fetch_chart(sym, args.window)
             res   = analyze_mr(sym, name_map.get(sym, sym), chart, sp, args.tp_level)
 
             # Compute display code (strip mode suffix, mirrors scan_mr_ma20.py)
