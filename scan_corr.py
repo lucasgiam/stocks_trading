@@ -1,5 +1,5 @@
 """
-scan_stocks_corr.py
+scan_corr.py
 
 Fetch daily prices from Yahoo Finance for a list of symbols and compute a Pearson correlation matrix
 on daily log returns over the past 200 trading days.

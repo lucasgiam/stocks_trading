@@ -1,0 +1,796 @@
+"""
+scan_mr_backtest.py
+
+Mean-reversion backtester: for each symbol, pulls 5 years of daily OHLCV from
+Yahoo Finance and simulates how the stock has historically behaved after touching
+a reference price level.
+
+For each "band visit" (contiguous run of days where close is within ±start_band
+of start_price) one episode is generated:
+  Entry    : first day of the band visit
+  Scan     : every day after the visit exits the band, until intraday high >= tp_price
+             (TP hit) or end of data — price returning to the band does NOT end the scan
+  TP/SL    : detected via intraday high/low (not close), order of first occurrence matters:
+               clean_win    — high >= tp_price reached before low <= sl_price (or no SL at all)
+               avg_down_win — low  <= sl_price was hit first, then high >= tp_price later
+               failed       — low  <= sl_price hit, high >= tp_price never came
+               inconclusive — neither hit by end of data
+
+Usage example:
+  python scan_mr_backtest.py --mode sg --symbols D05 C6L --tp_level 0.08
+  python scan_mr_backtest.py --mode us --symbols AAPL MSFT NVDA --sort_by successes
+  python scan_mr_backtest.py --mode us --symbols NVDA --start_price 800 --tp_level 0.15
+  python scan_mr_backtest.py --mode us --symbols TSLA NVDA MSFT --start_price 360 190 400
+  python scan_mr_backtest.py --mode cc --symbols BTC ETH --tp_level 0.2 --start_band 0.03
+  python scan_mr_backtest.py --mode sg --symbols auto --success_thres 3 --sort_by successes
+
+Notes:
+- --mode selects:
+    'sg' for SGX (codes like 'D05', 'C6L'; mapped to Yahoo by appending '.SI'),
+    'us' for US stocks (codes like 'AAPL', 'GOOG'; used as-is),
+    'cc' for cryptocurrencies (codes like 'BTC', 'ETH'; mapped to Yahoo by appending '-USD'),
+    'id' for indexes (codes like '^STI', '^DJI'; used as-is for Yahoo, but '^' stripped in
+         display; any dot-suffix tickers e.g. ES3.SI are also accepted and suffix is stripped).
+- --symbols takes space-separated codes (no quotes), or 'auto' to load from all_<mode>_stocks.txt.
+- --start_price sets the reference entry price(s) for the band:
+    * omit to use each symbol's own latest close (default).
+    * if provided, must supply exactly N values in the same order as --symbols.
+      Example: --symbols TSLA NVDA MSFT --start_price 360 190 400
+- --tp_level sets the take-profit and stop-loss distance as a fraction of start_price:
+    * TP is triggered when intraday high >= start_price * (1 + tp_level).
+    * SL is triggered when intraday low  <= start_price * (1 - tp_level).
+    * default: 0.10 (10%%).
+- --start_band sets the half-width of the entry band around start_price:
+    * a band visit is any contiguous run of days where close ∈
+      [start_price*(1-start_band), start_price*(1+start_band)].
+    * default: 0.02 (±2%%).  Increase for volatile or high-priced names to get
+      more band visits and a larger sample.
+- --sort_by controls sorting of the final summary table:
+    * 'successes': sort by MR success rate % (successes / total episodes), descending.
+    * 'none':      keep scan order as processed (default).
+- --min_episodes filters the output to only show symbols with at least N total episodes
+    (successes + any open/pending episode counted together):
+    * default: 2 (symbols with fewer than 2 episodes are hidden).
+    * set higher (e.g. 4) to focus on names with a richer backtest sample.
+- --success_thres filters the output to only show symbols whose effective success rate
+    (wins within max_hold / total episodes) meets the threshold:
+    * default: 0.5 (50%%).
+    * accepts a value between 0.0 and 1.0.
+- --max_hold caps the maximum acceptable holding period for a win:
+    * any episode where TP was hit but took >= max_hold trading days is reclassified
+      as a timeout (not counted as a success).
+    * any open/pending episode that has already lasted >= max_hold calendar days is
+      labelled OPEN/FAIL in the breakdown.
+    * default: 80.
+- --exclude removes the specified symbols from being processed (mode normalization is applied).
+- --sleep sets the delay in seconds between Yahoo Finance requests (default: 0.5).
+"""
+
+from __future__ import annotations
+
+import argparse
+import gzip
+import http.cookiejar as cookielib
+import json
+import math
+import re
+import sys
+import time
+import urllib.request
+import zlib
+from collections import Counter
+from datetime import date, datetime, timezone
+
+from tqdm import tqdm
+
+# ─── Yahoo Finance endpoints ──────────────────────────────────────────────────
+
+YF_HOME       = "https://finance.yahoo.com/"
+YF_GET_CRUMB  = "https://query1.finance.yahoo.com/v1/test/getcrumb"
+YF_QUOTE_PAGE = "https://finance.yahoo.com/quote/{symbol}?p={symbol}"
+YF_QUOTE_URL  = (
+    "https://query1.finance.yahoo.com/v7/finance/quote"
+    "?symbols={symbols}&lang=en-US&region=US"
+)
+YF_SEARCH_URL = (
+    "https://query2.finance.yahoo.com/v1/finance/search?q={symbol}&quotesCount=1"
+)
+YF_CHART_5Y_URL = (
+    "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    "?interval=1d&range=5y&includeAdjustedClose=true"
+)
+
+UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/131.0.0.0 Safari/537.36"
+)
+_CJ     = cookielib.CookieJar()
+_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_CJ))
+_CRUMB  = None
+
+
+# ─── HTTP helpers (same pattern as scan_mr_ma20.py) ──────────────────────
+
+def _decompress_and_decode(resp, data: bytes) -> str:
+    enc = (resp.headers.get("Content-Encoding") or "").lower()
+    if enc == "gzip" or (len(data) > 2 and data[:2] == b"\x1f\x8b"):
+        data = gzip.decompress(data)
+    elif enc == "deflate":
+        data = zlib.decompress(data, -zlib.MAX_WBITS)
+    return data.decode("utf-8", errors="replace")
+
+
+def http_get_json(url, timeout=20):
+    if "{crumb}" in url:
+        url = url.format(crumb=_CRUMB or "")
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent":      UA,
+            "Accept":          "application/json,text/plain,*/*",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Language": "en-US,en;q=0.8",
+            "Connection":      "keep-alive",
+            "Referer":         "https://finance.yahoo.com/",
+            "Origin":          "https://finance.yahoo.com",
+            "Pragma":          "no-cache",
+            "Cache-Control":   "no-cache",
+        },
+    )
+    with _OPENER.open(req, timeout=timeout) as resp:
+        data = resp.read()
+        text = _decompress_and_decode(resp, data)
+        return json.loads(text)
+
+
+def http_get_text(url, timeout=20):
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent":      UA,
+            "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Language": "en-US,en;q=0.8",
+            "Connection":      "keep-alive",
+            "Referer":         "https://finance.yahoo.com/",
+            "Origin":          "https://finance.yahoo.com",
+            "Pragma":          "no-cache",
+            "Cache-Control":   "no-cache",
+        },
+    )
+    with _OPENER.open(req, timeout=timeout) as resp:
+        data = resp.read()
+        return _decompress_and_decode(resp, data)
+
+
+def warm_up_cookies_and_crumb(symbol_for_visit: str):
+    global _CRUMB
+    try:
+        _ = http_get_text(YF_HOME)
+        time.sleep(0.3)
+        _ = http_get_text(YF_QUOTE_PAGE.format(symbol=symbol_for_visit))
+        time.sleep(0.3)
+        try:
+            crumb_text = http_get_text(YF_GET_CRUMB).strip()
+            if crumb_text and len(crumb_text) < 64:
+                _CRUMB = crumb_text
+        except Exception as e:
+            print(f"[WARN] crumb fetch failed: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"[WARN] warm-up failed: {e}", file=sys.stderr)
+
+
+# ─── Ticker normalizers ───────────────────────────────────────────────────────
+
+def ensure_si(ticker: str) -> str:
+    t = ticker.strip().upper()
+    return t if t.endswith(".SI") else f"{t}.SI"
+
+
+def ensure_cc(ticker: str) -> str:
+    t = ticker.strip().upper()
+    return t if t.endswith("-USD") else f"{t}-USD"
+
+
+def ensure_idx(ticker: str) -> str:
+    t = ticker.strip().upper()
+    if t.startswith("^"):
+        return t
+    if re.search(r"\.[A-Z0-9]+$", t):
+        return t
+    return t
+
+
+# ─── Name lookup ─────────────────────────────────────────────────────────────
+
+def try_quote_names(symbols: list[str]) -> dict:
+    name_map = {s: s for s in symbols}
+    try:
+        payload = http_get_json(YF_QUOTE_URL.format(symbols=",".join(symbols)))
+        for q in payload.get("quoteResponse", {}).get("result", []):
+            sym = q.get("symbol", "")
+            nm  = (
+                q.get("shortName")
+                or q.get("longName")
+                or q.get("displayName")
+                or sym
+            )
+            name_map[sym] = nm
+    except Exception:
+        pass
+    return name_map
+
+
+def try_search_name(symbol: str) -> str:
+    try:
+        p = http_get_json(YF_SEARCH_URL.format(symbol=symbol))
+        quotes = p.get("quotes", []) or []
+        if quotes:
+            return (
+                quotes[0].get("shortname")
+                or quotes[0].get("longname")
+                or symbol
+            )
+    except Exception:
+        pass
+    return symbol
+
+
+def get_name_map(symbols: list[str]) -> dict:
+    nm = try_quote_names(symbols)
+    for s in symbols:
+        if not nm.get(s) or nm.get(s) == s:
+            nm[s] = try_search_name(s)
+    return nm
+
+
+# ─── Chart fetch ──────────────────────────────────────────────────────────────
+
+def fetch_chart_5y(symbol: str) -> dict:
+    """Fetch 5 years of daily OHLCV + Unix timestamps from Yahoo Finance."""
+    payload = http_get_json(YF_CHART_5Y_URL.format(symbol=symbol))
+    result  = payload.get("chart", {}).get("result", []) or []
+    if not result:
+        raise ValueError("No chart result returned")
+    r0    = result[0]
+    ind   = r0.get("indicators", {}) or {}
+    quote = (ind.get("quote", [{}]) or [{}])[0]
+    return {
+        "timestamps": r0.get("timestamp") or [],
+        "open":       quote.get("open")   or [],
+        "high":       quote.get("high")   or [],
+        "low":        quote.get("low")    or [],
+        "close":      quote.get("close")  or [],
+        "volume":     quote.get("volume") or [],
+    }
+
+
+# ─── Utilities ────────────────────────────────────────────────────────────────
+
+def is_finite(x) -> bool:
+    return isinstance(x, (int, float)) and math.isfinite(x)
+
+
+def ts_to_date(ts) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def _auto_dp(price) -> int:
+    """Decimal places based on price magnitude."""
+    if not is_finite(price) or price == 0:
+        return 2
+    if price >= 100:
+        return 2
+    if price >= 10:
+        return 3
+    if price >= 1:
+        return 4
+    return 5
+
+
+# ─── Core analysis ────────────────────────────────────────────────────────────
+
+def analyze_mr(
+    symbol: str,
+    name: str,
+    chart: dict,
+    start_price: float | None,
+    tp_level: float,
+    start_band: float,
+) -> dict:
+    """
+    Episode-based MR analysis using intraday high/low for TP/SL detection.
+
+    Episode model:
+      Episode start: earliest day in full 5Y window where close falls into the
+                     entry band [sp*(1-start_band), sp*(1+start_band)].
+                     After each TP hit, the next entry-band close starts the next episode.
+      Episode end  : first day where high >= tp_price (TP hit), regardless of
+                     band re-entries during the episode.
+                     If TP never hit → episode runs to present day (pending).
+      Next episode : after TP hit, find next entry-band close → repeat.
+
+    SL is monitored throughout each episode (low <= sl_price).
+    Classification:
+      clean_win    — high >= tp_price reached before low <= sl_price (or no SL)
+      avg_down_win — low <= sl_price hit first, then high >= tp_price later
+      failed       — low <= sl_price hit, high >= tp_price never came
+      inconclusive — neither hit by end of data
+    """
+    closes     = chart["close"]
+    highs      = chart["high"]
+    lows       = chart["low"]
+    timestamps = chart["timestamps"]
+
+    n = min(len(closes), len(highs), len(lows), len(timestamps))
+
+    valid_days = [
+        (i, ts, c, h, lo)
+        for i, (ts, c, h, lo) in enumerate(
+            zip(timestamps[:n], closes[:n], highs[:n], lows[:n])
+        )
+        if (
+            c  is not None and is_finite(c)
+            and h  is not None and is_finite(h)
+            and lo is not None and is_finite(lo)
+        )
+    ]
+
+    if not valid_days:
+        raise ValueError("No valid OHLC prices in 5Y history")
+
+    sp = (
+        start_price
+        if (start_price is not None and is_finite(start_price))
+        else valid_days[-1][2]
+    )
+
+    entry_low    = sp * (1 - start_band)
+    entry_high   = sp * (1 + start_band)
+    tp_price     = sp * (1 + tp_level)
+    sl_price     = sp * (1 - tp_level)
+    m = len(valid_days)
+
+    episodes = []
+    i = 0  # scan the full 5Y window for entry-band visits
+
+    while i < m:
+        # Advance to next close in entry band
+        while i < m and not (entry_low <= valid_days[i][2] <= entry_high):
+            i += 1
+        if i >= m:
+            break
+
+        entry_i  = i
+        entry_ts = valid_days[i][1]
+        entry_c  = valid_days[i][2]
+
+        # Scan from the NEXT day — entry is confirmed at close, so that day's
+        # intraday high/low cannot be acted on until the following session.
+        first_tp_k = None
+        first_sl_k = None
+
+        for k in range(entry_i + 1, m):
+            _, _, _, kh, kl = valid_days[k]
+            if first_sl_k is None and kl <= sl_price:
+                first_sl_k = k
+            if first_tp_k is None and kh >= tp_price:
+                first_tp_k = k
+                break  # TP hit — episode over
+
+        tp_dur = first_tp_k - entry_i if first_tp_k is not None else None
+        sl_dur = first_sl_k - entry_i if first_sl_k is not None else None
+
+        scan_end  = (first_tp_k + 1) if first_tp_k is not None else m
+        scan_lows = [valid_days[k][4] for k in range(entry_i + 1, scan_end)]
+        min_low   = min(scan_lows) if scan_lows else None
+        min_low_ts = next(
+            (valid_days[k][1] for k in range(entry_i, scan_end)
+             if valid_days[k][4] == min_low),
+            None,
+        ) if min_low is not None else None
+
+        if first_tp_k is None and first_sl_k is None:
+            outcome = "inconclusive"
+        elif first_tp_k is not None and first_sl_k is None:
+            outcome = "clean_win"
+        elif first_tp_k is not None:
+            # Both hit: day index determines order (same day → SL first, conservative)
+            outcome = "clean_win" if tp_dur < sl_dur else "avg_down_win"
+        else:
+            outcome = "failed"
+
+        episodes.append({
+            "entry_date":    ts_to_date(entry_ts),
+            "entry_close":   entry_c,
+            "outcome":       outcome,
+            "first_tp_date": ts_to_date(valid_days[first_tp_k][1]) if first_tp_k is not None else None,
+            "tp_dur_td":     tp_dur,
+            "first_sl_date": ts_to_date(valid_days[first_sl_k][1]) if first_sl_k is not None else None,
+            "sl_dur_td":     sl_dur,
+            "min_low":       min_low,
+            "min_low_date":  ts_to_date(min_low_ts) if min_low_ts else None,
+        })
+
+        if first_tp_k is not None:
+            i = first_tp_k + 1  # look for next episode after TP day
+        else:
+            break  # last episode — TP never hit, stop
+
+    successes = [ep for ep in episodes if ep["outcome"] in ("clean_win", "avg_down_win")]
+
+    # Last episode with no TP = the ongoing/pending one shown in breakdown
+    last_ep = episodes[-1] if episodes else None
+    pending = last_ep if (last_ep and last_ep["outcome"] in ("failed", "inconclusive")) else None
+
+    return {
+        "symbol":       symbol,
+        "name":         name,
+        "start_price":  sp,
+        "tp_price":     tp_price,
+        "sl_price":     sl_price,
+        "entry_low":    entry_low,
+        "entry_high":   entry_high,
+        "n_episodes":   len(episodes),
+        "data_start":   ts_to_date(valid_days[0][1]),
+        "data_end":     ts_to_date(valid_days[-1][1]),
+        "latest_close": valid_days[-1][2],
+        "episodes":     episodes,
+        "successes":    successes,
+        "pending":      pending,
+    }
+
+
+# ─── Terminal output ──────────────────────────────────────────────────────────
+
+def _date_range_str(start_str: str, end_str: str) -> str:
+    """Return 'X years Y months' duration between two YYYY-MM-DD strings."""
+    start  = date.fromisoformat(start_str)
+    end    = date.fromisoformat(end_str)
+    months = (end.year - start.year) * 12 + (end.month - start.month)
+    years, rem_m = divmod(months, 12)
+    y = f"{years} year{'s' if years != 1 else ''}"
+    m = f"{rem_m} month{'s' if rem_m != 1 else ''}"
+    if years > 0 and rem_m > 0:
+        return f"{y} {m}"
+    return y if years > 0 else m
+
+
+def _print_summary(results: list[dict], min_episodes: int, max_hold: int, success_thres: float):
+    total_processed = len(results)
+
+    def _eff_rate(r: dict) -> float:
+        if not r["n_episodes"]:
+            return 0.0
+        wins = sum(1 for ep in r["successes"] if (ep["tp_dur_td"] or 0) < max_hold)
+        return wins / r["n_episodes"]
+
+    filtered = [
+        r for r in results
+        if r["n_episodes"] >= min_episodes and _eff_rate(r) >= success_thres
+    ]
+
+    applied_str = f"episodes >= {min_episodes}, success rate >= {success_thres:.0%}"
+    print(
+        f"\nProcessed {total_processed} valid symbols, {len(filtered)} passed filter: "
+        f"{applied_str}\n"
+    )
+
+    if not filtered:
+        return
+
+    sep = "─" * 72
+
+    for res in filtered:
+        sp = res["start_price"]
+        dp = _auto_dp(sp)
+
+        def p(x, _dp=dp) -> str:
+            return f"{x:.{_dp}f}" if is_finite(x) else "N/A"
+
+        code      = res.get("disp_code", res["symbol"])
+        name      = res["name"]
+        n_ep      = res["n_episodes"]
+
+        # Effective successes: TP hit AND within max_hold trading days
+        eff_succ = [
+            ep for ep in res["successes"]
+            if (ep["tp_dur_td"] or 0) < max_hold
+        ]
+        n_succ   = len(eff_succ)
+        pct      = n_succ / n_ep * 100 if n_ep else 0
+        hist_str = _date_range_str(res["data_start"], res["data_end"])
+        succ_str = f"{n_succ}/{n_ep} ({pct:.0f}%)"
+
+        print(sep)
+        print(f"  {code}  ·  {name}")
+        print(sep)
+        print(
+            f"  LC: {p(res['latest_close'])} | "
+            f"TP: {p(res['tp_price'])} | "
+            f"SL: {p(res['sl_price'])} | "
+            f"History: {hist_str} | "
+            f"Successes: {succ_str}"
+        )
+
+        # Build breakdown: all successes (incl. timeouts) + pending, most recent first
+        show_eps = list(res["successes"])
+        if res.get("pending"):
+            show_eps.append(res["pending"])
+        show_eps.sort(key=lambda ep: ep["entry_date"], reverse=True)
+
+        print("  Episode breakdown:")
+        for k, ep in enumerate(show_eps, 1):
+            outcome = ep["outcome"]
+            is_open = outcome in ("failed", "inconclusive")
+
+            if is_open:
+                elapsed = (date.today() - date.fromisoformat(ep["entry_date"])).days
+                tp_str = "open"
+                dur    = f"{elapsed} days"
+                status = "OPEN/FAIL" if elapsed >= max_hold else "OPEN"
+            else:
+                tp_str = ep["first_tp_date"] or "?"
+                dur    = f"{ep['tp_dur_td']} days" if ep["tp_dur_td"] else "?"
+                status = "TIMEOUT" if (ep["tp_dur_td"] or 0) >= max_hold else "WIN"
+
+            if ep.get("first_sl_date"):
+                sl_tag = f"SL:YES (low {p(ep['min_low'])} on {ep['min_low_date']})"
+            else:
+                sl_tag = "SL:no"
+
+            print(f"  {k:>2}. {ep['entry_date']} → {tp_str:<10}  {dur:>9}  {sl_tag}  [{status}]")
+
+        print()
+
+    print(sep)
+
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=(
+            "Mean-reversion backtester: uses 5 years of Yahoo Finance daily data to "
+            "show how reliably a stock bounced from a given price level to a TP target, "
+            "and whether it dipped below an SL level (requiring a top-up) along the way."
+        )
+    )
+    ap.add_argument(
+        "--mode",
+        choices=["sg", "us", "cc", "id"],
+        required=True,
+        help=(
+            "'sg' SGX tickers (appends .SI),  'us' US stocks,  "
+            "'cc' crypto (appends -USD),  'id' indexes"
+        ),
+    )
+    ap.add_argument(
+        "--symbols",
+        nargs="+",
+        help=(
+            "Space-separated stock/crypto/index codes, or 'auto' to load from "
+            "all_<mode>_stocks.txt."
+        ),
+    )
+    ap.add_argument(
+        "--start_price",
+        nargs="+",
+        type=float,
+        default=None,
+        help=(
+            "Reference entry price(s).  Either omit (each symbol uses its own latest close) "
+            "or provide exactly N values matching the N symbols in --symbols order.  "
+            "Example: --symbols TSLA NVDA --start_price 360 190"
+        ),
+    )
+    ap.add_argument(
+        "--tp_level",
+        type=float,
+        default=0.1,
+        help="Take-profit distance as a fraction of start_price (default: 0.10 = 10%%).",
+    )
+    ap.add_argument(
+        "--start_band",
+        type=float,
+        default=0.02,
+        help=(
+            "Half-width of the entry band around start_price as a fraction "
+            "(default: 0.02 = ±2%%).  Increase for volatile or high-priced names "
+            "to get more band visits."
+        ),
+    )
+    ap.add_argument(
+        "--sort_by",
+        choices=["successes", "none"],
+        default="successes",
+        help=(
+            "Sort output by: 'successes' (highest MR success rate %% first, descending) "
+            "or 'none' (keep scan order, default)."
+        ),
+    )
+    ap.add_argument(
+        "--success_thres",
+        type=float,
+        default=0.5,
+        help=(
+            "Minimum effective success rate (wins within max_hold / total episodes) "
+            "to include a symbol (default: 0.5 = 50%%)."
+        ),
+    )
+    ap.add_argument(
+        "--min_episodes",
+        type=int,
+        default=2,
+        help=(
+            "Minimum total number of episodes (successes + any open episode) required "
+            "to include a symbol in the output (default: 2)."
+        ),
+    )
+    ap.add_argument(
+        "--max_hold",
+        type=int,
+        default=80,
+        help=(
+            "Maximum holding period in days for a win to count as a success. "
+            "Episodes where TP took >= max_hold trading days are labelled TIMEOUT; "
+            "open episodes lasting >= max_hold calendar days are labelled OPEN/FAIL "
+            "(default: 80)."
+        ),
+    )
+    ap.add_argument(
+        "--exclude",
+        nargs="+",
+        help=(
+            "Space-separated codes to exclude "
+            "('.SI' optional for SGX; '-USD' optional for crypto; '^' optional for indexes)."
+        ),
+    )
+    ap.add_argument(
+        "--sleep",
+        type=float,
+        default=0.5,
+        help="Seconds to sleep between requests (default: 0.5).",
+    )
+    args = ap.parse_args()
+
+    # Symbols must be provided for all modes (unless using 'auto' later).
+    if not args.symbols:
+        print(
+            "ERROR: No symbols provided. Please supply at least one via --symbols.",
+            file=sys.stderr,
+        )
+        return
+
+    # Handle 'auto' mode for symbols: load from all_<mode>_stocks.txt
+    if args.symbols and len(args.symbols) == 1 and args.symbols[0].lower() == "auto":
+        auto_file = f"all_{args.mode}_stocks.txt"
+        try:
+            with open(auto_file, "r", encoding="utf-8") as f:
+                text = f.read()
+        except FileNotFoundError:
+            print(
+                f"ERROR: Auto symbols file not found: {auto_file}",
+                file=sys.stderr,
+            )
+            return
+        except Exception as e:
+            print(
+                f"ERROR: Failed to read auto symbols file {auto_file}: {e}",
+                file=sys.stderr,
+            )
+            return
+        input_symbols = text.split()
+        if not input_symbols:
+            print(
+                f"ERROR: Auto symbols file {auto_file} contains no symbols.",
+                file=sys.stderr,
+            )
+            return
+    else:
+        input_symbols = args.symbols
+
+    # Validate --start_price count against input symbols before normalization
+    if args.start_price is not None and len(args.start_price) != len(input_symbols):
+        print(
+            f"ERROR: --start_price has {len(args.start_price)} value(s) "
+            f"but --symbols resolved to {len(input_symbols)} ticker(s).  "
+            "They must match 1-to-1, or omit --start_price entirely to use latest closes.",
+            file=sys.stderr,
+        )
+        return
+
+    input_start_prices: list[float | None] = (
+        list(args.start_price) if args.start_price is not None
+        else [None] * len(input_symbols)
+    )
+
+    exclude_symbols = args.exclude if args.exclude else []
+
+    if args.mode == "sg":
+        exclude_normalized = {ensure_si(s) for s in exclude_symbols}
+        normalized_symbols = [ensure_si(s) for s in input_symbols]
+    elif args.mode == "cc":
+        exclude_normalized = {ensure_cc(s) for s in exclude_symbols}
+        normalized_symbols = [ensure_cc(s) for s in input_symbols]
+    elif args.mode == "id":
+        exclude_normalized = {ensure_idx(s) for s in exclude_symbols}
+        normalized_symbols = [ensure_idx(s) for s in input_symbols]
+    else:  # 'us'
+        exclude_normalized = {s.strip().upper() for s in exclude_symbols}
+        normalized_symbols = [s.strip().upper() for s in input_symbols]
+
+    counts = Counter(normalized_symbols)
+    duplicates = [f"{sym} (x{counts[sym]})" for sym in counts if counts[sym] > 1]
+    if duplicates:
+        print(
+            "[WARN] Duplicate codes detected (will be de-duplicated): "
+            + ", ".join(duplicates)
+        )
+
+    # Deduplicate and exclude, carrying start_price values along
+    seen: dict[str, float | None] = {}
+    for sym, sp in zip(normalized_symbols, input_start_prices):
+        if sym not in seen and sym not in exclude_normalized:
+            seen[sym] = sp
+    symbols_si      = list(seen.keys())
+    start_prices_si = list(seen.values())
+
+    print("[INFO] Fetching scanning data...")
+    try:
+        warm_up_cookies_and_crumb(symbols_si[0])
+    except Exception:
+        pass
+
+    name_map = get_name_map(symbols_si)
+
+    results = []
+    for sym, sp in tqdm(
+        zip(symbols_si, start_prices_si),
+        desc="Scanning",
+        unit="symbol",
+        total=len(symbols_si),
+    ):
+        try:
+            chart = fetch_chart_5y(sym)
+            res   = analyze_mr(sym, name_map.get(sym, sym), chart, sp, args.tp_level, args.start_band)
+
+            # Compute display code (strip mode suffix, mirrors scan_mr_ma20.py)
+            if args.mode == "sg":
+                disp_code = sym.removesuffix(".SI")
+            elif args.mode == "cc":
+                disp_code = sym.removesuffix("-USD")
+            elif args.mode == "id":
+                if sym.startswith("^"):
+                    disp_code = sym[1:]
+                elif "." in sym:
+                    disp_code = sym.rsplit(".", 1)[0]
+                else:
+                    disp_code = sym
+            else:
+                disp_code = sym
+            res["disp_code"] = disp_code
+
+            results.append(res)
+        except Exception as e:
+            print(f"[WARN] {sym}: {e}", file=sys.stderr)
+        finally:
+            time.sleep(args.sleep)
+
+    # Sort before printing
+    if args.sort_by == "successes":
+        mh = args.max_hold
+        results.sort(
+            key=lambda r: (
+                sum(1 for ep in r["successes"] if (ep["tp_dur_td"] or 0) < mh)
+                / r["n_episodes"] if r["n_episodes"] else 0
+            ),
+            reverse=True,
+        )
+
+    _print_summary(results, args.min_episodes, args.max_hold, args.success_thres)
+
+
+if __name__ == "__main__":
+    main()
