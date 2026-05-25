@@ -5,23 +5,20 @@ Mean-reversion backtester: for each symbol, pulls 5 years of daily OHLCV from
 Yahoo Finance and simulates how the stock has historically behaved after touching
 a reference price level.
 
-For each "band visit" (contiguous run of days where close is within ±start_band
-of start_price) one episode is generated:
-  Entry    : first day of the band visit
-  Scan     : every day after the visit exits the band, until intraday high >= tp_price
-             (TP hit) or end of data — price returning to the band does NOT end the scan
-  TP/SL    : detected via intraday high/low (not close), order of first occurrence matters:
-               clean_win    — high >= tp_price reached before low <= sl_price (or no SL at all)
-               avg_down_win — low  <= sl_price was hit first, then high >= tp_price later
-               failed       — low  <= sl_price hit, high >= tp_price never came
-               inconclusive — neither hit by end of data
+For each OHLC touch of start_price one episode is generated:
+  Entry    : earliest day where start_price falls within the day's OHLC (low <= sp <= high)
+  Scan     : every day after entry, until intraday high >= tp_price (TP hit) or end of data
+  TP       : fixed to start_price * (1 + tp_level) for all episodes.
+             Detected via intraday high (not close):
+               win          — high >= tp_price
+               inconclusive — TP never hit by end of data
 
 Usage example:
   python scan_mr_backtest.py --mode sg --symbols D05 C6L --tp_level 0.08
   python scan_mr_backtest.py --mode us --symbols AAPL MSFT NVDA --sort_by successes
   python scan_mr_backtest.py --mode us --symbols NVDA --start_price 800 --tp_level 0.15
   python scan_mr_backtest.py --mode us --symbols TSLA NVDA MSFT --start_price 360 190 400
-  python scan_mr_backtest.py --mode cc --symbols BTC ETH --tp_level 0.2 --start_band 0.03
+  python scan_mr_backtest.py --mode cc --symbols BTC ETH --tp_level 0.2
   python scan_mr_backtest.py --mode sg --symbols auto --success_thres 3 --sort_by successes
 
 Notes:
@@ -32,19 +29,14 @@ Notes:
     'id' for indexes (codes like '^STI', '^DJI'; used as-is for Yahoo, but '^' stripped in
          display; any dot-suffix tickers e.g. ES3.SI are also accepted and suffix is stripped).
 - --symbols takes space-separated codes (no quotes), or 'auto' to load from all_<mode>_stocks.txt.
-- --start_price sets the reference entry price(s) for the band:
+- --start_price sets the reference price used for entry detection and TP calculation:
     * omit to use each symbol's own latest close (default).
     * if provided, must supply exactly N values in the same order as --symbols.
       Example: --symbols TSLA NVDA MSFT --start_price 360 190 400
-- --tp_level sets the take-profit and stop-loss distance as a fraction of start_price:
+    * an episode starts on the earliest day where start_price falls within that day's OHLC.
+- --tp_level sets the take-profit distance as a fraction of start_price:
     * TP is triggered when intraday high >= start_price * (1 + tp_level).
-    * SL is triggered when intraday low  <= start_price * (1 - tp_level).
     * default: 0.10 (10%%).
-- --start_band sets the half-width of the entry band around start_price:
-    * a band visit is any contiguous run of days where close ∈
-      [start_price*(1-start_band), start_price*(1+start_band)].
-    * default: 0.02 (±2%%).  Increase for volatile or high-priced names to get
-      more band visits and a larger sample.
 - --sort_by controls sorting of the final summary table:
     * 'succ_pct':  sort by MR success rate % (successes / total episodes), descending.
     * 'succ_abs':  sort by absolute number of successes, descending (default).
@@ -298,26 +290,24 @@ def analyze_mr(
     chart: dict,
     start_price: float | None,
     tp_level: float,
-    start_band: float,
 ) -> dict:
     """
-    Episode-based MR analysis using intraday high/low for TP/SL detection.
+    Episode-based MR analysis using intraday high for TP detection.
 
     Episode model:
-      Episode start: earliest day in full 5Y window where close falls into the
-                     entry band [sp*(1-start_band), sp*(1+start_band)].
-                     After each TP hit, the next entry-band close starts the next episode.
-      Episode end  : first day where high >= tp_price (TP hit), regardless of
-                     band re-entries during the episode.
+      Episode start: earliest day in 5Y window where start_price falls within the
+                     day's OHLC range (low <= sp <= high).
+                     After each TP hit, the next such day starts the next episode.
+      Episode end  : first day (from next day after entry) where high >= tp_price.
                      If TP never hit → episode runs to present day (pending).
-      Next episode : after TP hit, find next entry-band close → repeat.
+      Next episode : after TP hit, find next day where sp falls within OHLC → repeat.
 
-    SL is monitored throughout each episode (low <= sl_price).
+    TP is fixed to start_price (same for all episodes):
+      tp_price = sp * (1 + tp_level)
+
     Classification:
-      clean_win    — high >= tp_price reached before low <= sl_price (or no SL)
-      avg_down_win — low <= sl_price hit first, then high >= tp_price later
-      failed       — low <= sl_price hit, high >= tp_price never came
-      inconclusive — neither hit by end of data
+      win          — high >= tp_price
+      inconclusive — TP never hit by end of data
     """
     closes     = chart["close"]
     highs      = chart["high"]
@@ -347,18 +337,15 @@ def analyze_mr(
         else valid_days[-1][2]
     )
 
-    entry_low    = sp * (1 - start_band)
-    entry_high   = sp * (1 + start_band)
-    tp_price     = sp * (1 + tp_level)
-    sl_price     = sp * (1 - tp_level)
+    tp_price = sp * (1 + tp_level)
     m = len(valid_days)
 
     episodes = []
-    i = 0  # scan the full 5Y window for entry-band visits
+    i = 0  # scan the full 5Y window for OHLC touches of sp
 
     while i < m:
-        # Advance to next close in entry band
-        while i < m and not (entry_low <= valid_days[i][2] <= entry_high):
+        # Advance to next day where sp falls within the day's OHLC
+        while i < m and not (valid_days[i][4] <= sp <= valid_days[i][3]):
             i += 1
         if i >= m:
             break
@@ -367,40 +354,28 @@ def analyze_mr(
         entry_ts = valid_days[i][1]
         entry_c  = valid_days[i][2]
 
-        # Scan from the NEXT day — entry is confirmed at close, so that day's
-        # intraday high/low cannot be acted on until the following session.
+        # Scan from the NEXT day — entry is triggered intraday, so TP can only
+        # be acted on from the following session onward.
         first_tp_k = None
-        first_sl_k = None
 
         for k in range(entry_i + 1, m):
-            _, _, _, kh, kl = valid_days[k]
-            if first_sl_k is None and kl <= sl_price:
-                first_sl_k = k
-            if first_tp_k is None and kh >= tp_price:
+            _, _, _, kh, _ = valid_days[k]
+            if kh >= tp_price:
                 first_tp_k = k
                 break  # TP hit — episode over
 
         tp_dur = first_tp_k - entry_i if first_tp_k is not None else None
-        sl_dur = first_sl_k - entry_i if first_sl_k is not None else None
 
         scan_end  = (first_tp_k + 1) if first_tp_k is not None else m
         scan_lows = [valid_days[k][4] for k in range(entry_i + 1, scan_end)]
-        min_low   = min(scan_lows) if scan_lows else None
+        min_low   = min(scan_lows) if scan_lows else sp
         min_low_ts = next(
             (valid_days[k][1] for k in range(entry_i, scan_end)
              if valid_days[k][4] == min_low),
             None,
         ) if min_low is not None else None
 
-        if first_tp_k is None and first_sl_k is None:
-            outcome = "inconclusive"
-        elif first_tp_k is not None and first_sl_k is None:
-            outcome = "clean_win"
-        elif first_tp_k is not None:
-            # Both hit: day index determines order (same day → SL first, conservative)
-            outcome = "clean_win" if tp_dur < sl_dur else "avg_down_win"
-        else:
-            outcome = "failed"
+        outcome = "win" if first_tp_k is not None else "inconclusive"
 
         episodes.append({
             "entry_date":    ts_to_date(entry_ts),
@@ -408,8 +383,6 @@ def analyze_mr(
             "outcome":       outcome,
             "first_tp_date": ts_to_date(valid_days[first_tp_k][1]) if first_tp_k is not None else None,
             "tp_dur_td":     tp_dur,
-            "first_sl_date": ts_to_date(valid_days[first_sl_k][1]) if first_sl_k is not None else None,
-            "sl_dur_td":     sl_dur,
             "min_low":       min_low,
             "min_low_date":  ts_to_date(min_low_ts) if min_low_ts else None,
         })
@@ -419,20 +392,17 @@ def analyze_mr(
         else:
             break  # last episode — TP never hit, stop
 
-    successes = [ep for ep in episodes if ep["outcome"] in ("clean_win", "avg_down_win")]
+    successes = [ep for ep in episodes if ep["outcome"] == "win"]
 
-    # Last episode with no TP = the ongoing/pending one shown in breakdown
+    # Last episode with no TP = the ongoing/pending one
     last_ep = episodes[-1] if episodes else None
-    pending = last_ep if (last_ep and last_ep["outcome"] in ("failed", "inconclusive")) else None
+    pending = last_ep if (last_ep and last_ep["outcome"] == "inconclusive") else None
 
     return {
         "symbol":       symbol,
         "name":         name,
         "start_price":  sp,
         "tp_price":     tp_price,
-        "sl_price":     sl_price,
-        "entry_low":    entry_low,
-        "entry_high":   entry_high,
         "n_episodes":   len(episodes),
         "data_start":   ts_to_date(valid_days[0][1]),
         "data_end":     ts_to_date(valid_days[-1][1]),
@@ -497,54 +467,69 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
         name      = res["name"]
         n_ep      = res["n_episodes"]
 
-        # Effective successes: TP hit AND within max_hold trading days
-        eff_succ = [
-            ep for ep in res["successes"]
-            if (ep["tp_dur_td"] or 0) < max_hold
-        ]
-        n_succ   = len(eff_succ)
-        pct      = n_succ / n_ep * 100 if n_ep else 0
-        hist_str = _date_range_str(res["data_start"], res["data_end"])
-        succ_str = f"{n_succ}/{n_ep} ({pct:.0f}%)"
+        eff_succ  = [ep for ep in res["successes"] if (ep["tp_dur_td"] or 0) < max_hold]
+        n_succ    = len(eff_succ)
+        pct       = n_succ / n_ep * 100 if n_ep else 0
+        hist_str  = _date_range_str(res["data_start"], res["data_end"])
+        succ_str  = f"{n_succ}/{n_ep} ({pct:.0f}%)"
 
         print(sep)
         print(f"  {code}  ·  {name}")
         print(sep)
-        print(
-            f"  LC: {p(res['latest_close'])} | "
-            f"TP: {p(res['tp_price'])} | "
-            f"SL: {p(res['sl_price'])} | "
-            f"History: {hist_str} | "
-            f"Successes: {succ_str}"
-        )
+        print(f"  History: {hist_str} | Successes: {succ_str}")
+        print()
 
-        # Build breakdown: all successes (incl. timeouts) + pending, most recent first
-        show_eps = list(res["successes"])
-        if res.get("pending"):
-            show_eps.append(res["pending"])
-        show_eps.sort(key=lambda ep: ep["entry_date"], reverse=True)
+        # All episodes, most recent first
+        show_eps = sorted(res["episodes"], key=lambda ep: ep["entry_date"], reverse=True)
 
-        print("  Episode breakdown:")
-        for k, ep in enumerate(show_eps, 1):
+        if not show_eps:
+            print("  (no episodes)")
+            print()
+            continue
+
+        # Pre-compute all row values to determine column widths
+        sp_val = p(sp)
+        lc_val = p(res["latest_close"])
+        tp_val = p(res["tp_price"])
+        rows = []
+        for ep in show_eps:
             outcome = ep["outcome"]
-            is_open = outcome in ("failed", "inconclusive")
-
+            is_open = outcome == "inconclusive"
             if is_open:
-                elapsed = (date.today() - date.fromisoformat(ep["entry_date"])).days
-                tp_str = "open"
-                dur    = f"{elapsed} days"
-                status = "OPEN/FAIL" if elapsed >= max_hold else "OPEN"
+                elapsed  = (date.today() - date.fromisoformat(ep["entry_date"])).days
+                exit_str = "open"
+                dur      = f"{elapsed} days"
+                status   = "[OPEN/FAIL]" if elapsed >= max_hold else "[OPEN]"
             else:
-                tp_str = ep["first_tp_date"] or "?"
-                dur    = f"{ep['tp_dur_td']} days" if ep["tp_dur_td"] else "?"
-                status = "TIMEOUT" if (ep["tp_dur_td"] or 0) >= max_hold else "WIN"
+                exit_str = ep["first_tp_date"] or "?"
+                dur      = f"{ep['tp_dur_td']} days" if ep["tp_dur_td"] is not None else "?"
+                status   = "[TIMEOUT]" if (ep["tp_dur_td"] or 0) >= max_hold else "[WIN]"
+            low_val = p(ep["min_low"])
+            rows.append((ep["entry_date"], exit_str, dur, low_val, status))
 
-            if ep.get("first_sl_date"):
-                sl_tag = f"SL:YES (low {p(ep['min_low'])} on {ep['min_low_date']})"
-            else:
-                sl_tag = "SL:no"
+        dur_w  = max(max(len(r[2]) for r in rows), len("Duration"))
+        sp_w   = max(len(sp_val), len("SP"))
+        lc_w   = max(len(lc_val), len("LC"))
+        tp_w   = max(len(tp_val), len("TP"))
+        low_w  = max(max(len(r[3]) for r in rows), len("Low"))
+        stat_w = max(max(len(r[4]) for r in rows), len("Status"))
 
-            print(f"  {k:>2}. {ep['entry_date']} → {tp_str:<10}  {dur:>9}  {sl_tag}  [{status}]")
+        hdr = (
+            f"  {'#':>3}  {'Entry':10}  {'→ Exit':12}  {'Duration':>{dur_w}}  "
+            f"{'SP':>{sp_w}}  {'LC':>{lc_w}}  {'TP':>{tp_w}}  {'Low':>{low_w}}  Status"
+        )
+        rule = (
+            f"  {'─'*3}  {'─'*10}  {'─'*12}  {'─'*dur_w}  "
+            f"{'─'*sp_w}  {'─'*lc_w}  {'─'*tp_w}  {'─'*low_w}  {'─'*stat_w}"
+        )
+        print(hdr)
+        print(rule)
+
+        for k, (entry_date, exit_str, dur, low_val, status) in enumerate(rows, 1):
+            print(
+                f"  {k:>3}  {entry_date:10}  → {exit_str:<10}  {dur:>{dur_w}}  "
+                f"{sp_val:>{sp_w}}  {lc_val:>{lc_w}}  {tp_val:>{tp_w}}  {low_val:>{low_w}}  {status}"
+            )
 
         print()
 
@@ -558,7 +543,7 @@ def main():
         description=(
             "Mean-reversion backtester: uses 5 years of Yahoo Finance daily data to "
             "show how reliably a stock bounced from a given price level to a TP target, "
-            "and whether it dipped below an SL level (requiring a top-up) along the way."
+            "and how far price dipped during each episode before recovering to the TP target."
         )
     )
     ap.add_argument(
@@ -594,16 +579,6 @@ def main():
         type=float,
         default=0.1,
         help="Take-profit distance as a fraction of start_price (default: 0.10 = 10%%).",
-    )
-    ap.add_argument(
-        "--start_band",
-        type=float,
-        default=0.02,
-        help=(
-            "Half-width of the entry band around start_price as a fraction "
-            "(default: 0.02 = ±2%%).  Increase for volatile or high-priced names "
-            "to get more band visits."
-        ),
     )
     ap.add_argument(
         "--sort_by",
@@ -677,7 +652,14 @@ def main():
     )
     args = ap.parse_args()
 
-    if args.no_filters:
+    is_auto = (
+        args.symbols
+        and len(args.symbols) == 1
+        and args.symbols[0].lower() == "auto"
+    )
+
+    # When symbols are explicitly provided, disable all filters automatically.
+    if not is_auto or args.no_filters:
         args.min_episodes  = 0
         args.success_thres = 0.0
         args.max_hold      = 10 ** 9
@@ -782,7 +764,7 @@ def main():
     ):
         try:
             chart = fetch_chart_5y(sym)
-            res   = analyze_mr(sym, name_map.get(sym, sym), chart, sp, args.tp_level, args.start_band)
+            res   = analyze_mr(sym, name_map.get(sym, sym), chart, sp, args.tp_level)
 
             # Compute display code (strip mode suffix, mirrors scan_mr_ma20.py)
             if args.mode == "sg":
