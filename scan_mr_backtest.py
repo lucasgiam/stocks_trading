@@ -46,8 +46,9 @@ Notes:
     * default: 0.02 (±2%%).  Increase for volatile or high-priced names to get
       more band visits and a larger sample.
 - --sort_by controls sorting of the final summary table:
-    * 'successes': sort by MR success rate % (successes / total episodes), descending.
-    * 'none':      keep scan order as processed (default).
+    * 'succ_pct':  sort by MR success rate % (successes / total episodes), descending.
+    * 'succ_abs':  sort by absolute number of successes, descending (default).
+    * 'none':      keep scan order as processed.
 - --min_episodes filters the output to only show symbols with at least N total episodes
     (successes + any open/pending episode counted together):
     * default: 2 (symbols with fewer than 2 episodes are hidden).
@@ -603,11 +604,12 @@ def main():
     )
     ap.add_argument(
         "--sort_by",
-        choices=["successes", "none"],
-        default="successes",
+        choices=["succ_pct", "succ_abs", "none"],
+        default="succ_abs",
         help=(
-            "Sort output by: 'successes' (highest MR success rate %% first, descending) "
-            "or 'none' (keep scan order, default)."
+            "Sort output by: 'succ_pct' (success %% descending), "
+            "'succ_abs' (absolute number of successes descending, default), "
+            "or 'none' (keep scan order)."
         ),
     )
     ap.add_argument(
@@ -653,7 +655,20 @@ def main():
         default=0.5,
         help="Seconds to sleep between requests (default: 0.5).",
     )
+    ap.add_argument(
+        "--no_filters",
+        action="store_true",
+        help=(
+            "Disable all default output filters: sets min_episodes=0, "
+            "success_thres=0.0, and max_hold=inf so every symbol and episode is shown."
+        ),
+    )
     args = ap.parse_args()
+
+    if args.no_filters:
+        args.min_episodes  = 0
+        args.success_thres = 0.0
+        args.max_hold      = 10 ** 9
 
     # Symbols must be provided for all modes (unless using 'auto' later).
     if not args.symbols:
@@ -779,15 +794,21 @@ def main():
             time.sleep(args.sleep)
 
     # Sort before printing
-    if args.sort_by == "successes":
+    if args.sort_by in ("succ_pct", "succ_abs"):
         mh = args.max_hold
-        results.sort(
-            key=lambda r: (
-                sum(1 for ep in r["successes"] if (ep["tp_dur_td"] or 0) < mh)
-                / r["n_episodes"] if r["n_episodes"] else 0
-            ),
-            reverse=True,
-        )
+        if args.sort_by == "succ_pct":
+            results.sort(
+                key=lambda r: (
+                    sum(1 for ep in r["successes"] if (ep["tp_dur_td"] or 0) < mh)
+                    / r["n_episodes"] if r["n_episodes"] else 0
+                ),
+                reverse=True,
+            )
+        else:  # succ_abs
+            results.sort(
+                key=lambda r: sum(1 for ep in r["successes"] if (ep["tp_dur_td"] or 0) < mh),
+                reverse=True,
+            )
 
     _print_summary(results, args.min_episodes, args.max_hold, args.success_thres)
 
