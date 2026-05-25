@@ -458,7 +458,7 @@ def _date_range_str(start_str: str, end_str: str) -> str:
     return y if years > 0 else m
 
 
-def _print_summary(results: list[dict], min_episodes: int, max_hold: int, success_thres: float):
+def _print_summary(results: list[dict], min_episodes: int, max_hold: int, success_thres: float, top_n: int):
     total_processed = len(results)
 
     def _eff_rate(r: dict) -> float:
@@ -472,7 +472,10 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
         if r["n_episodes"] >= min_episodes and _eff_rate(r) >= success_thres
     ]
 
-    applied_str = f"episodes >= {min_episodes}, success rate >= {success_thres:.0%}"
+    if top_n > 0 and len(filtered) > top_n:
+        filtered = filtered[:top_n]
+
+    applied_str = f"episodes >= {min_episodes}, success rate >= {success_thres:.0%}, top {top_n}"
     print(
         f"\nProcessed {total_processed} valid symbols, {len(filtered)} passed filter: "
         f"{applied_str}\n"
@@ -656,6 +659,15 @@ def main():
         help="Seconds to sleep between requests (default: 0.5).",
     )
     ap.add_argument(
+        "--top_N",
+        type=int,
+        default=10,
+        help=(
+            "After all other filters, keep only the top N symbols (default: 10). "
+            "Set to 0 to disable."
+        ),
+    )
+    ap.add_argument(
         "--no_filters",
         action="store_true",
         help=(
@@ -669,6 +681,7 @@ def main():
         args.min_episodes  = 0
         args.success_thres = 0.0
         args.max_hold      = 10 ** 9
+        args.top_N         = 0
 
     # Symbols must be provided for all modes (unless using 'auto' later).
     if not args.symbols:
@@ -810,7 +823,7 @@ def main():
                 reverse=True,
             )
 
-    _print_summary(results, args.min_episodes, args.max_hold, args.success_thres)
+    _print_summary(results, args.min_episodes, args.max_hold, args.success_thres, args.top_N)
 
 
 if __name__ == "__main__":
