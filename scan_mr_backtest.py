@@ -18,6 +18,7 @@ Usage example:
   python scan_mr_backtest.py --mode us --symbols AAPL MSFT NVDA --sort_by successes
   python scan_mr_backtest.py --mode us --symbols NVDA --start_price 800 --tp_level 0.15
   python scan_mr_backtest.py --mode us --symbols TSLA NVDA MSFT --start_price 360 190 400
+  python scan_mr_backtest.py --mode us --symbols NVDA --start_price 190 200 210
   python scan_mr_backtest.py --mode cc --symbols BTC ETH --tp_level 0.2
   python scan_mr_backtest.py --mode sg --symbols auto --min_episodes 3 --sort_by succ_abs
   python scan_mr_backtest.py --mode us --symbols AAPL --window 3
@@ -714,6 +715,15 @@ def main():
     else:
         input_symbols = args.symbols
 
+    # Special case: 1 unique symbol + multiple start prices → expand symbol list
+    _is_multi_price = (
+        args.start_price is not None
+        and len(args.start_price) > 1
+        and len({s.lower() for s in input_symbols}) == 1
+    )
+    if _is_multi_price:
+        input_symbols = [input_symbols[0]] * len(args.start_price)
+
     # Validate --start_price count against input symbols before normalization
     if args.start_price is not None and len(args.start_price) != len(input_symbols):
         print(
@@ -746,19 +756,23 @@ def main():
 
     counts = Counter(normalized_symbols)
     duplicates = [f"{sym} (x{counts[sym]})" for sym in counts if counts[sym] > 1]
-    if duplicates:
+    if duplicates and not _is_multi_price:
         print(
             "[WARN] Duplicate codes detected (will be de-duplicated): "
             + ", ".join(duplicates)
         )
 
     # Deduplicate and exclude, carrying start_price values along
-    seen: dict[str, float | None] = {}
+    # Key by (sym, sp) so the same symbol at different price levels is kept distinct.
+    seen: set = set()
+    symbols_si: list[str] = []
+    start_prices_si: list[float | None] = []
     for sym, sp in zip(normalized_symbols, input_start_prices):
-        if sym not in seen and sym not in exclude_normalized:
-            seen[sym] = sp
-    symbols_si      = list(seen.keys())
-    start_prices_si = list(seen.values())
+        key = (sym, sp)
+        if key not in seen and sym not in exclude_normalized:
+            seen.add(key)
+            symbols_si.append(sym)
+            start_prices_si.append(sp)
 
     print("[INFO] Fetching scanning data...")
     try:
@@ -768,6 +782,8 @@ def main():
 
     name_map = get_name_map(symbols_si)
 
+    chart_cache: dict[str, dict] = {}
+    sym_counts = Counter(symbols_si)
     results = []
     for sym, sp in tqdm(
         zip(symbols_si, start_prices_si),
@@ -776,7 +792,10 @@ def main():
         total=len(symbols_si),
     ):
         try:
-            chart = fetch_chart(sym, args.window)
+            if sym not in chart_cache:
+                chart_cache[sym] = fetch_chart(sym, args.window)
+                time.sleep(args.sleep)
+            chart = chart_cache[sym]
             res   = analyze_mr(sym, name_map.get(sym, sym), chart, sp, args.tp_level)
 
             # Compute display code (strip mode suffix, mirrors scan_mr_ma20.py)
@@ -793,13 +812,16 @@ def main():
                     disp_code = sym
             else:
                 disp_code = sym
+            # Append @<price> when the same symbol appears at multiple price levels
+            if sym_counts[sym] > 1:
+                raw_sp = res["start_price"]
+                sp_str = f"{raw_sp:.0f}" if raw_sp == int(raw_sp) else f"{raw_sp:g}"
+                disp_code = f"{disp_code}@{sp_str}"
             res["disp_code"] = disp_code
 
             results.append(res)
         except Exception as e:
             print(f"[WARN] {sym}: {e}", file=sys.stderr)
-        finally:
-            time.sleep(args.sleep)
 
     # Sort before printing
     if args.sort_by in ("succ_pct", "succ_abs"):
