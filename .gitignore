@@ -1,2 +1,16 @@
 .DS_Store
-fetch_latest/*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/

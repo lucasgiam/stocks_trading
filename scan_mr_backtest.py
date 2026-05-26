@@ -19,7 +19,7 @@ Usage example:
   python scan_mr_backtest.py --mode us --symbols NVDA --start_price 800 --tp_level 0.15
   python scan_mr_backtest.py --mode us --symbols TSLA NVDA MSFT --start_price 360 190 400
   python scan_mr_backtest.py --mode cc --symbols BTC ETH --tp_level 0.2
-  python scan_mr_backtest.py --mode sg --symbols auto --success_thres 3 --sort_by successes
+  python scan_mr_backtest.py --mode sg --symbols auto --min_episodes 3 --sort_by succ_abs
   python scan_mr_backtest.py --mode us --symbols AAPL --window 3
 
 Notes:
@@ -297,7 +297,7 @@ def analyze_mr(
     Episode-based MR analysis using intraday high for TP detection.
 
     Episode model:
-      Episode start: earliest day in 5Y window where start_price falls within the
+      Episode start: earliest day in the lookback window where start_price falls within the
                      day's OHLC range (low <= sp <= high).
                      After each TP hit, the next such day starts the next episode.
       Episode end  : first day (from next day after entry) where high >= tp_price.
@@ -331,7 +331,7 @@ def analyze_mr(
     ]
 
     if not valid_days:
-        raise ValueError("No valid OHLC prices in 5Y history")
+        raise ValueError("No valid OHLC prices in history")
 
     sp = (
         start_price
@@ -343,7 +343,7 @@ def analyze_mr(
     m = len(valid_days)
 
     episodes = []
-    i = 0  # scan the full 5Y window for OHLC touches of sp
+    i = 0  # scan the full lookback window for OHLC touches of sp
 
     while i < m:
         # Advance to next day where sp falls within the day's OHLC
@@ -543,9 +543,10 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
 def main():
     ap = argparse.ArgumentParser(
         description=(
-            "Mean-reversion backtester: uses 5 years of Yahoo Finance daily data to "
-            "show how reliably a stock bounced from a given price level to a TP target, "
-            "and how far price dipped during each episode before recovering to the TP target."
+            "Mean-reversion backtester: uses Yahoo Finance daily data (lookback window "
+            "configurable via --window, default 1 year) to show how reliably a stock bounced "
+            "from a given price level to a TP target, and how far price dipped during each "
+            "episode before recovering to the TP target."
         )
     )
     ap.add_argument(
@@ -655,7 +656,7 @@ def main():
         action="store_true",
         help=(
             "Disable all default output filters: sets min_episodes=0, "
-            "success_thres=0.0, and max_hold=inf so every symbol and episode is shown."
+            "success_thres=0.0, max_hold=inf, and top_N=0 so every symbol and episode is shown."
         ),
     )
     args = ap.parse_args()
