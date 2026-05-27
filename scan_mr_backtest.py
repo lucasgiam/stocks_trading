@@ -50,7 +50,7 @@ Notes:
 - --max_hold caps the maximum holding period in trading days:
     * TP not hit within max_hold trading days → FAIL.
     * End of data reached before max_hold elapsed without TP → OPEN.
-    * default: 20.
+    * default: 50.
 - --sort_by controls sorting of the final summary table:
     * 'succ_pct':  sort by success rate %% (wins / total episodes), descending.
     * 'succ_abs':  sort by absolute number of wins, descending (default).
@@ -570,6 +570,7 @@ def _print_summary(
     min_episodes: int,
     success_thres: float,
     top_n: int,
+    max_hold: int = 50,
 ):
     total_processed = len(results)
 
@@ -648,7 +649,8 @@ def _print_summary(
                 elapsed  = (date.today() - date.fromisoformat(ep["entry_date"])).days
                 exit_str = "open"
                 dur      = f"{elapsed} days"
-                status   = "[OPEN]"
+                # ~7 calendar days per 5 trading days; if max_hold elapsed → FAIL
+                status   = "[FAIL]" if elapsed >= max_hold * 7 // 5 else "[OPEN]"
 
             rows.append((
                 ep["entry_date"],
@@ -759,11 +761,11 @@ def main():
     ap.add_argument(
         "--max_hold",
         type=int,
-        default=20,
+        default=50,
         help=(
             "Maximum holding period in trading days. "
             "TP not hit within max_hold days → FAIL; "
-            "end of data reached within max_hold → OPEN (default: 20)."
+            "end of data reached within max_hold → OPEN (default: 50)."
         ),
     )
     ap.add_argument(
@@ -912,7 +914,7 @@ def main():
         else:  # succ_abs
             results.sort(key=lambda r: len(r["successes"]), reverse=True)
 
-    _print_summary(results, args.min_episodes, args.success_thres, args.top_N)
+    _print_summary(results, args.min_episodes, args.success_thres, args.top_N, args.max_hold)
 
 
 if __name__ == "__main__":
