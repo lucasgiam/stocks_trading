@@ -15,7 +15,7 @@ For each OHLC touch of start_price one episode is generated:
 
 Usage example:
   python scan_mr_backtest.py --mode sg --symbols D05 C6L --tp_level 0.08
-  python scan_mr_backtest.py --mode us --symbols AAPL MSFT NVDA --sort_by successes
+  python scan_mr_backtest.py --mode us --symbols AAPL MSFT NVDA --sort_by succ_abs
   python scan_mr_backtest.py --mode us --symbols NVDA --price 800 --tp_level 0.15
   python scan_mr_backtest.py --mode us --symbols TSLA NVDA MSFT --price 360 190 400
   python scan_mr_backtest.py --mode us --symbols NVDA --price 190 200 210
@@ -52,10 +52,10 @@ Notes:
     * default: 0.5 (50%%).
     * accepts a value between 0.0 and 1.0.
 - --max_hold caps the maximum acceptable holding period for a win:
-    * any episode where TP was hit but took >= max_hold trading days is reclassified
-      as a timeout (not counted as a success).
-    * any open/pending episode that has already lasted >= max_hold calendar days is
-      labelled OPEN/FAIL in the breakdown.
+    * any episode where TP was hit but took > max_hold trading days is labelled FAIL
+      (not counted as a success).
+    * any open/pending episode that has already lasted > max_hold calendar days is
+      labelled FAIL in the breakdown.
     * default: 50.
 - --exclude removes the specified symbols from being processed (mode normalization is applied).
 - --sleep sets the delay in seconds between Yahoo Finance requests (default: 0.5).
@@ -373,7 +373,7 @@ def analyze_mr(
         scan_lows = [valid_days[k][4] for k in range(entry_i + 1, scan_end)]
         min_low   = min(scan_lows) if scan_lows else sp
         min_low_ts = next(
-            (valid_days[k][1] for k in range(entry_i, scan_end)
+            (valid_days[k][1] for k in range(entry_i + 1, scan_end)
              if valid_days[k][4] == min_low),
             None,
         ) if min_low is not None else None
@@ -657,7 +657,7 @@ def main():
         action="store_true",
         help=(
             "Disable all default output filters: sets min_episodes=0, "
-            "success_thres=0.0, max_hold=inf, and top_N=0 so every symbol and episode is shown."
+            "success_thres=0.0, and top_N=0 so every symbol is shown."
         ),
     )
     args = ap.parse_args()
@@ -673,10 +673,11 @@ def main():
     )
 
     # When symbols are explicitly provided, disable all filters automatically.
+    # max_hold is intentionally NOT overridden here — it controls WIN/FAIL labels
+    # and the successes count, which should always reflect the user's threshold.
     if not is_auto or args.no_filters:
         args.min_episodes  = 0
         args.success_thres = 0.0
-        args.max_hold      = 10 ** 9
         args.top_N         = 0
 
     # Symbols must be provided for all modes (unless using 'auto' later).
