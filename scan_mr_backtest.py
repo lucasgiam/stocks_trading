@@ -437,7 +437,7 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
     def _eff_rate(r: dict) -> float:
         if not r["n_episodes"]:
             return 0.0
-        wins = sum(1 for ep in r["successes"] if (ep["tp_dur_td"] or 0) < max_hold)
+        wins = sum(1 for ep in r["successes"] if (ep["tp_dur_td"] or 0) <= max_hold)
         return wins / r["n_episodes"]
 
     filtered = [
@@ -470,7 +470,7 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
         name      = res["name"]
         n_ep      = res["n_episodes"]
 
-        eff_succ  = [ep for ep in res["successes"] if (ep["tp_dur_td"] or 0) < max_hold]
+        eff_succ  = [ep for ep in res["successes"] if (ep["tp_dur_td"] or 0) <= max_hold]
         n_succ    = len(eff_succ)
         pct       = n_succ / n_ep * 100 if n_ep else 0
         hist_str  = _date_range_str(res["data_start"], res["data_end"])
@@ -502,11 +502,11 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
                 elapsed  = (date.today() - date.fromisoformat(ep["entry_date"])).days
                 exit_str = "open"
                 dur      = f"{elapsed} days"
-                status   = "[OPEN/FAIL]" if elapsed >= max_hold else "[OPEN]"
+                status   = "[FAIL]" if elapsed > max_hold else "[OPEN]"
             else:
                 exit_str = ep["first_tp_date"] or "?"
                 dur      = f"{ep['tp_dur_td']} days" if ep["tp_dur_td"] is not None else "?"
-                status   = "[TIMEOUT]" if (ep["tp_dur_td"] or 0) >= max_hold else "[WIN]"
+                status   = "[FAIL]" if (ep["tp_dur_td"] or 0) > max_hold else "[WIN]"
             low_val = p(ep["min_low"])
             rows.append((ep["entry_date"], exit_str, dur, low_val, status))
 
@@ -618,8 +618,8 @@ def main():
         default=50,
         help=(
             "Maximum holding period in days for a win to count as a success. "
-            "Episodes where TP took >= max_hold trading days are labelled TIMEOUT; "
-            "open episodes lasting >= max_hold calendar days are labelled OPEN/FAIL "
+            "Episodes where TP took > max_hold trading days are labelled FAIL; "
+            "open episodes lasting > max_hold calendar days are labelled FAIL "
             "(default: 50)."
         ),
     )
@@ -829,14 +829,14 @@ def main():
         if args.sort_by == "succ_pct":
             results.sort(
                 key=lambda r: (
-                    sum(1 for ep in r["successes"] if (ep["tp_dur_td"] or 0) < mh)
+                    sum(1 for ep in r["successes"] if (ep["tp_dur_td"] or 0) <= mh)
                     / r["n_episodes"] if r["n_episodes"] else 0
                 ),
                 reverse=True,
             )
         else:  # succ_abs
             results.sort(
-                key=lambda r: sum(1 for ep in r["successes"] if (ep["tp_dur_td"] or 0) < mh),
+                key=lambda r: sum(1 for ep in r["successes"] if (ep["tp_dur_td"] or 0) <= mh),
                 reverse=True,
             )
 
