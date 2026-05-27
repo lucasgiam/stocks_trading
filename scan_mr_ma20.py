@@ -354,7 +354,7 @@ def ma_stack_str(r):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Scan SGX, US, crypto, or index (Yahoo) and rank by Delta% vs MA20."
+        description="Scan SGX, US, crypto, or index (Yahoo) and rank by Delta%% vs MA20."
     )
     ap.add_argument(
         "--mode",
@@ -383,9 +383,9 @@ def main():
         "--delta_thres",
         default=None,
         help=(
-            "Delta% filter: if X <= 0, keep rows with Delta% ≤ X; "
-            "if X > 0, keep rows with Delta% > X. "
-            "Use 'z' to apply per-record rule: if Z ≤ 0 then Delta% ≤ Z, else Delta% ≥ Z."
+            "Delta%% filter: if X <= 0, keep rows with Delta%% ≤ X; "
+            "if X > 0, keep rows with Delta%% > X. "
+            "Use 'z' to apply per-record rule: if Z ≤ 0 then Delta%% ≤ Z, else Delta%% ≥ Z."
         ),
     )
     ap.add_argument(
@@ -402,7 +402,7 @@ def main():
         choices=["delta", "z", "none"],
         default="none",
         help=(
-            "Sort output by: 'delta' (ΔLC%) or 'z' (Z) or 'none' (no sorting; keep scan order). "
+            "Sort output by: 'delta' (ΔLC%%) or 'z' (Z) or 'none' (no sorting; keep scan order). "
             "For 'delta' and 'z': if threshold X <= 0 or not set → increasing (most negative first); "
             "if X > 0 → decreasing (most positive first)."
         ),
@@ -735,6 +735,12 @@ def main():
         # stack = ma_stack_str(r)
         # if stack:
         #     print(stack)
+
+    if filtered:
+        print()
+        print("Symbol list:")
+        print(" ".join(r["Symbol"] for r in filtered))
+        print()
 
 
 if __name__ == "__main__":

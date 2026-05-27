@@ -1,24 +1,39 @@
 """
 scan_mr_backtest.py
 
-Mean-reversion backtester: for each symbol, pulls daily OHLCV from Yahoo Finance
-(lookback window configurable via --window, default 1 year) and simulates how the
-stock has historically behaved after touching a reference price level.
+Mean-reversion backtester using Bollinger Band (20,2) lower-band close touches as episode
+triggers.  For each symbol, pulls daily OHLCV from Yahoo Finance (lookback window
+configurable via --window, default 1 year) and simulates how the stock has historically
+behaved after the close price touches the lower BB(20,2) band.
 
-For each OHLC touch of start_price one episode is generated:
-  Entry    : earliest day where start_price falls within the day's OHLC (low <= sp <= high)
-  Scan     : every day after entry, until intraday high >= tp_price (TP hit) or end of data
-  TP       : fixed to start_price * (1 + tp_level) for all episodes.
-             Detected via intraday high (not close):
-               win          — high >= tp_price
-               inconclusive — TP never hit by end of data
+Episode model:
+  Trigger  : close Z-score (= (close − MA20) / SD20) <= z_thres on day T.
+             The first such close in the lookback window starts episode 1.
+             While an episode is active, further BB touches are ignored; the next
+             episode search resumes only after the current episode resolves.
+  Entry    : the FOLLOWING trading day (T+1).  entry_price = open on day T+1.
+  TP       : entry_price * (1 + tp_level).  Checked via intraday high from day T+1
+             onward (including the entry day itself).
+  WIN      : intraday high >= tp_price within max_hold trading days.
+  FAIL     : max_hold trading days elapsed without intraday high >= tp_price.
+  OPEN     : end of data reached before max_hold elapsed and TP not yet hit.
+
+Reset rule (prevents chaining episodes inside a persistent downtrend):
+  After each episode, a new episode may only start once Z >= 0 has been seen
+  at least once since the trigger day.  If Z >= 0 occurred during the episode,
+  the next trigger search resumes normally from i_next.  If not (e.g. the stock
+  stayed deeply oversold throughout), the scan fast-forwards until Z >= 0 before
+  looking for the next trigger.
+
+BB(20,2):
+  MA20     = simple 20-day moving average of closes.
+  SD20     = 20-day sample standard deviation of closes (ddof=1).
+  Lower BB = MA20 − 2 × SD20.
 
 Usage example:
   python scan_mr_backtest.py --mode sg --symbols D05 C6L --tp_level 0.08
   python scan_mr_backtest.py --mode us --symbols AAPL MSFT NVDA --sort_by succ_abs
-  python scan_mr_backtest.py --mode us --symbols NVDA --price 800 --tp_level 0.15
-  python scan_mr_backtest.py --mode us --symbols TSLA NVDA MSFT --price 360 190 400
-  python scan_mr_backtest.py --mode us --symbols NVDA --price 190 200 210
+  python scan_mr_backtest.py --mode us --symbols NVDA --tp_level 0.15
   python scan_mr_backtest.py --mode cc --symbols BTC ETH --tp_level 0.2
   python scan_mr_backtest.py --mode sg --symbols auto --min_episodes 3 --sort_by succ_abs
   python scan_mr_backtest.py --mode us --symbols AAPL --window 3
@@ -31,35 +46,21 @@ Notes:
     'id' for indexes (codes like '^STI', '^DJI'; used as-is for Yahoo, but '^' stripped in
          display; any dot-suffix tickers e.g. ES3.SI are also accepted and suffix is stripped).
 - --symbols takes space-separated codes (no quotes), or 'auto' to load from all_<mode>_stocks.txt.
-- --price sets the reference price used for entry detection and TP calculation:
-    * omit to use each symbol's own latest close (default).
-    * if provided, must supply exactly N values in the same order as --symbols.
-      Example: --symbols TSLA NVDA MSFT --price 360 190 400
-    * an episode starts on the earliest day where start_price falls within that day's OHLC.
-- --tp_level sets the take-profit distance as a fraction of start_price:
-    * TP is triggered when intraday high >= start_price * (1 + tp_level).
-    * default: 0.10 (10%%).
+- --tp_level sets the take-profit distance as a fraction of entry_price (default: 0.10 = 10%).
+- --max_hold caps the maximum holding period in trading days:
+    * TP not hit within max_hold trading days → FAIL.
+    * End of data reached before max_hold elapsed without TP → OPEN.
+    * default: 20.
 - --sort_by controls sorting of the final summary table:
-    * 'succ_pct':  sort by MR success rate % (successes / total episodes), descending.
-    * 'succ_abs':  sort by absolute number of successes, descending (default).
-    * 'none':      keep scan order as processed.
+    * 'succ_pct':  sort by success rate %% (wins / total episodes), descending.
+    * 'succ_abs':  sort by absolute number of wins, descending (default).
+    * 'none':      keep scan order.
 - --min_episodes filters the output to only show symbols with at least N total episodes
-    (successes + any open/pending episode counted together):
-    * default: 2 (symbols with fewer than 2 episodes are hidden).
-    * set higher (e.g. 4) to focus on names with a richer backtest sample.
-- --success_thres filters the output to only show symbols whose effective success rate
-    (wins within max_hold / total episodes) meets the threshold:
-    * default: 0.5 (50%%).
-    * accepts a value between 0.0 and 1.0.
-- --max_hold caps the maximum acceptable holding period for a win:
-    * any episode where TP was hit but took > max_hold trading days is labelled FAIL
-      (not counted as a success).
-    * any open/pending episode that has already lasted > max_hold calendar days is
-      labelled FAIL in the breakdown.
-    * default: 50.
-- --exclude removes the specified symbols from being processed (mode normalization is applied).
+    (default: 2).
+- --success_thres filters to symbols whose win rate >= threshold (default: 0.5 = 50%%).
+- --exclude removes the specified symbols from being processed (mode normalisation applied).
 - --sleep sets the delay in seconds between Yahoo Finance requests (default: 0.5).
-- --window sets the historical lookback period in years (any positive integer, default: 1).
+- --window sets the historical lookback period in years (positive integer, default: 1).
 """
 
 from __future__ import annotations
@@ -106,7 +107,7 @@ _OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_CJ))
 _CRUMB  = None
 
 
-# ─── HTTP helpers (same pattern as scan_mr_ma20.py) ──────────────────────
+# ─── HTTP helpers (identical to scan_price_backtest.py) ──────────────────────
 
 def _decompress_and_decode(resp, data: bytes) -> str:
     enc = (resp.headers.get("Content-Encoding") or "").lower()
@@ -285,44 +286,104 @@ def _auto_dp(price) -> int:
     return 5
 
 
+def _fmt_z(z) -> str:
+    """Format Z-score to 2 dp (matches scan_mr_ma20.py display)."""
+    return f"{z:.2f}" if is_finite(z) else "N/A"
+
+
+def _fmt_pct(pct) -> str:
+    """Format a percentage value to 2 dp with % suffix."""
+    return f"{pct:.2f}%" if is_finite(pct) else "N/A"
+
+
+# ─── BB(20,2) computation (same logic as scan_mr_ma20.py) ────────────────────
+
+def _mean(vals: list[float]) -> float:
+    return sum(vals) / len(vals) if vals else float("nan")
+
+
+def _std_sample(vals: list[float]) -> float:
+    n = len(vals)
+    if n < 2:
+        return float("nan")
+    m = _mean(vals)
+    return math.sqrt(sum((x - m) ** 2 for x in vals) / (n - 1))
+
+
+def compute_lower_bb(closes: list[float], period: int = 20, num_std: float = 2.0) -> list:
+    """
+    Return lower BB for each bar.  None for the first (period-1) bars where
+    there is insufficient history.  Uses ddof=1 (sample std), matching scan_mr_ma20.py.
+    """
+    result = []
+    for i in range(len(closes)):
+        if i < period - 1:
+            result.append(None)
+        else:
+            window = closes[i - period + 1 : i + 1]
+            ma = _mean(window)
+            sd = _std_sample(window)
+            result.append(ma - num_std * sd if (is_finite(ma) and is_finite(sd)) else None)
+    return result
+
+
+def compute_z_arr(closes: list[float], period: int = 20) -> list:
+    """
+    Return Z-score (close − MA(period)) / SD(period) for each bar.
+    None for the first (period-1) bars.  Uses ddof=1, matching scan_mr_ma20.py.
+    """
+    result = []
+    for i in range(len(closes)):
+        if i < period - 1:
+            result.append(None)
+        else:
+            window = closes[i - period + 1 : i + 1]
+            ma = _mean(window)
+            sd = _std_sample(window)
+            result.append(
+                (closes[i] - ma) / sd
+                if (is_finite(ma) and is_finite(sd) and sd != 0)
+                else None
+            )
+    return result
+
+
 # ─── Core analysis ────────────────────────────────────────────────────────────
 
-def analyze_mr(
+def analyze_mr_bb(
     symbol: str,
     name: str,
     chart: dict,
-    start_price: float | None,
     tp_level: float,
+    max_hold: int,
+    z_thres: float = -2.0,
 ) -> dict:
     """
-    Episode-based MR analysis using intraday high for TP detection.
+    Episode-based MR analysis driven by Z-score threshold touches.
 
-    Episode model:
-      Episode start: earliest day in the lookback window where start_price falls within the
-                     day's OHLC range (low <= sp <= high).
-                     After each TP hit, the next such day starts the next episode.
-      Episode end  : first day (from next day after entry) where high >= tp_price.
-                     If TP never hit → episode runs to present day (pending).
-      Next episode : after TP hit, find next day where sp falls within OHLC → repeat.
+    Trigger  : close Z-score (= (close − MA20) / SD20) <= z_thres.
+               Default z_thres=-2.0 is equivalent to touching the BB(20,2) lower band.
+    Consecutive-touch rule: once an episode is active, no new episode starts until
+    the current one resolves (WIN or FAIL).  After resolution the scan resumes from
+    the next bar and looks for the next trigger.
 
-    TP is fixed to start_price (same for all episodes):
-      tp_price = sp * (1 + tp_level)
-
-    Classification:
-      win          — high >= tp_price
-      inconclusive — TP never hit by end of data
+    Outcomes stored per episode:
+      'win'  — intraday high >= tp_price within max_hold trading days.
+      'fail' — max_hold trading days elapsed without hitting tp_price.
+      'open' — end of data reached inside the max_hold window with no TP hit.
     """
     closes     = chart["close"]
     highs      = chart["high"]
     lows       = chart["low"]
+    opens      = chart["open"]
     timestamps = chart["timestamps"]
 
-    n = min(len(closes), len(highs), len(lows), len(timestamps))
+    n = min(len(closes), len(highs), len(lows), len(opens), len(timestamps))
 
     valid_days = [
-        (i, ts, c, h, lo)
-        for i, (ts, c, h, lo) in enumerate(
-            zip(timestamps[:n], closes[:n], highs[:n], lows[:n])
+        (i, ts, c, h, lo, o)
+        for i, (ts, c, h, lo, o) in enumerate(
+            zip(timestamps[:n], closes[:n], highs[:n], lows[:n], opens[:n])
         )
         if (
             c  is not None and is_finite(c)
@@ -331,81 +392,155 @@ def analyze_mr(
         )
     ]
 
-    if not valid_days:
-        raise ValueError("No valid OHLC prices in history")
+    if len(valid_days) < 20:
+        raise ValueError(
+            f"Only {len(valid_days)} valid bars — need at least 20 to compute BB(20,2)"
+        )
 
-    sp = (
-        start_price
-        if (start_price is not None and is_finite(start_price))
-        else valid_days[-1][2]
-    )
+    m         = len(valid_days)
+    close_arr = [vd[2] for vd in valid_days]
+    lb_arr    = compute_lower_bb(close_arr)   # list[float | None], length m
+    z_arr     = compute_z_arr(close_arr)      # list[float | None], length m
 
-    tp_price = sp * (1 + tp_level)
-    m = len(valid_days)
-
-    episodes = []
-    i = 0  # scan the full lookback window for OHLC touches of sp
+    episodes: list[dict] = []
+    i = 19   # first bar with valid stats (needs 20 bars for MA20/SD20)
 
     while i < m:
-        # Advance to next day where sp falls within the day's OHLC
-        while i < m and not (valid_days[i][4] <= sp <= valid_days[i][3]):
+        lb  = lb_arr[i]
+        z_i = z_arr[i]
+
+        # Skip bars where Z is unavailable or above the trigger threshold
+        if z_i is None or not is_finite(z_i) or z_i > z_thres:
             i += 1
-        if i >= m:
-            break
+            continue
 
-        entry_i  = i
-        entry_ts = valid_days[i][1]
-        entry_c  = valid_days[i][2]
+        # ── Episode start ─────────────────────────────────────────────────────
+        trigger_i = i
+        entry_i   = trigger_i + 1   # episode starts the following bar
 
-        # Scan from the NEXT day — entry is triggered intraday, so TP can only
-        # be acted on from the following session onward.
+        # Skip if no next bar exists or its open is invalid
+        if entry_i >= m:
+            i += 1
+            continue
+        entry_price = valid_days[entry_i][5]   # index 5 = open
+        if entry_price is None or not is_finite(entry_price):
+            i += 1
+            continue
+
+        lower_bb_entry = lb
+        tp_price       = entry_price * (1 + tp_level)
+
+        # Z and MA20 from the trigger day
+        z_entry      = z_i if is_finite(z_i) else float("nan")
+        ma20_trigger = _mean(close_arr[trigger_i - 19 : trigger_i + 1])
+        ep_pct_entry = (
+            100.0 * (entry_price - ma20_trigger) / ma20_trigger
+            if (is_finite(ma20_trigger) and ma20_trigger != 0)
+            else float("nan")
+        )
+
+        # Scan max_hold bars starting from entry_i (inclusive) for an intraday TP hit
+        search_end = min(entry_i + max_hold, m)
         first_tp_k = None
 
-        for k in range(entry_i + 1, m):
-            _, _, _, kh, _ = valid_days[k]
-            if kh >= tp_price:
+        for k in range(entry_i, search_end):
+            if valid_days[k][3] >= tp_price:   # index 3 = high
                 first_tp_k = k
-                break  # TP hit — episode over
-
-        tp_dur = first_tp_k - entry_i if first_tp_k is not None else None
-
-        scan_end  = (first_tp_k + 1) if first_tp_k is not None else m
-        scan_lows = [valid_days[k][4] for k in range(entry_i + 1, scan_end)]
-        min_low   = min(scan_lows) if scan_lows else sp
-        min_low_ts = next(
-            (valid_days[k][1] for k in range(entry_i + 1, scan_end)
-             if valid_days[k][4] == min_low),
-            None,
-        ) if min_low is not None else None
-
-        outcome = "win" if first_tp_k is not None else "inconclusive"
-
-        episodes.append({
-            "entry_date":    ts_to_date(entry_ts),
-            "entry_close":   entry_c,
-            "outcome":       outcome,
-            "first_tp_date": ts_to_date(valid_days[first_tp_k][1]) if first_tp_k is not None else None,
-            "tp_dur_td":     tp_dur,
-            "min_low":       min_low,
-            "min_low_date":  ts_to_date(min_low_ts) if min_low_ts else None,
-        })
+                break
 
         if first_tp_k is not None:
-            i = first_tp_k + 1  # look for next episode after TP day
+            # WIN
+            outcome          = "win"
+            tp_dur           = first_tp_k - entry_i
+            fail_date        = None
+            eventual_tp_date = None
+            eventual_tp_dur  = None
+            scan_end_low     = first_tp_k + 1
+            i_next           = first_tp_k + 1
+        elif entry_i + max_hold > m:
+            # OPEN: ran out of data before max_hold expired
+            outcome          = "open"
+            tp_dur           = None
+            fail_date        = None
+            eventual_tp_date = None
+            eventual_tp_dur  = None
+            scan_end_low     = m
+            i_next           = m
         else:
-            break  # last episode — TP never hit, stop
+            # FAIL: max_hold exhausted — but keep scanning to see if TP eventually hits
+            outcome      = "fail"
+            tp_dur       = None
+            fail_date    = ts_to_date(valid_days[search_end - 1][1])
+            scan_end_low = search_end
+            i_next       = search_end
+
+            eventual_tp_k = None
+            for _k in range(search_end, m):
+                if valid_days[_k][3] >= tp_price:
+                    eventual_tp_k = _k
+                    break
+            eventual_tp_date = (
+                ts_to_date(valid_days[eventual_tp_k][1]) if eventual_tp_k is not None else None
+            )
+            eventual_tp_dur = (
+                eventual_tp_k - entry_i if eventual_tp_k is not None else None
+            )
+
+        # Min intraday low during the episode (entry_i → scan_end_low, inclusive)
+        scan_lows  = [valid_days[k][4] for k in range(entry_i, scan_end_low)]
+        min_low    = min(scan_lows) if scan_lows else entry_price
+        min_low_ts = next(
+            (valid_days[k][1] for k in range(entry_i, scan_end_low)
+             if valid_days[k][4] == min_low),
+            None,
+        ) if scan_lows else None
+
+        episodes.append({
+            "entry_date":         ts_to_date(valid_days[entry_i][1]),
+            "entry_price":        entry_price,
+            "lower_bb":           lower_bb_entry,
+            "z":                  z_entry,
+            "ep_pct":             ep_pct_entry,
+            "tp_price":           tp_price,
+            "outcome":            outcome,
+            "first_tp_date":      ts_to_date(valid_days[first_tp_k][1]) if first_tp_k is not None else None,
+            "tp_dur_td":          tp_dur,
+            "fail_date":          fail_date,
+            "eventual_tp_date":   eventual_tp_date,
+            "eventual_tp_dur_td": eventual_tp_dur,
+            "min_low":            min_low,
+            "min_low_date":       ts_to_date(min_low_ts) if min_low_ts else None,
+        })
+
+        # ── Reset condition ───────────────────────────────────────────────────
+        # A new episode is only allowed after Z >= 0 has been observed at least
+        # once since the trigger.  This prevents chaining episodes inside a
+        # persistent downtrend.  Check whether the reset was already seen
+        # within the episode window (trigger_i .. i_next-1).
+        reset_met = any(
+            z_arr[k] is not None and is_finite(z_arr[k]) and z_arr[k] >= 0
+            for k in range(trigger_i, i_next)
+        )
+
+        if reset_met:
+            i = i_next
+        else:
+            # Fast-forward until the first bar where Z >= 0 (reset achieved),
+            # then start looking for the next trigger from that point.
+            i = i_next
+            while i < m:
+                z_j = z_arr[i]
+                if z_j is not None and is_finite(z_j) and z_j >= 0:
+                    break
+                i += 1
 
     successes = [ep for ep in episodes if ep["outcome"] == "win"]
-
-    # Last episode with no TP = the ongoing/pending one
-    last_ep = episodes[-1] if episodes else None
-    pending = last_ep if (last_ep and last_ep["outcome"] == "inconclusive") else None
+    last_ep   = episodes[-1] if episodes else None
+    pending   = last_ep if (last_ep and last_ep["outcome"] == "open") else None
 
     return {
         "symbol":       symbol,
         "name":         name,
-        "start_price":  sp,
-        "tp_price":     tp_price,
         "n_episodes":   len(episodes),
         "data_start":   ts_to_date(valid_days[0][1]),
         "data_end":     ts_to_date(valid_days[-1][1]),
@@ -419,7 +554,6 @@ def analyze_mr(
 # ─── Terminal output ──────────────────────────────────────────────────────────
 
 def _date_range_str(start_str: str, end_str: str) -> str:
-    """Return 'X years Y months' duration between two YYYY-MM-DD strings."""
     start  = date.fromisoformat(start_str)
     end    = date.fromisoformat(end_str)
     months = (end.year - start.year) * 12 + (end.month - start.month)
@@ -431,14 +565,17 @@ def _date_range_str(start_str: str, end_str: str) -> str:
     return y if years > 0 else m
 
 
-def _print_summary(results: list[dict], min_episodes: int, max_hold: int, success_thres: float, top_n: int):
+def _print_summary(
+    results: list[dict],
+    min_episodes: int,
+    success_thres: float,
+    top_n: int,
+):
     total_processed = len(results)
 
     def _eff_rate(r: dict) -> float:
-        if not r["n_episodes"]:
-            return 0.0
-        wins = sum(1 for ep in r["successes"] if (ep["tp_dur_td"] or 0) <= max_hold)
-        return wins / r["n_episodes"]
+        # All wins are by construction within max_hold (hard-stopped at detection time)
+        return len(r["successes"]) / r["n_episodes"] if r["n_episodes"] else 0.0
 
     filtered = [
         r for r in results
@@ -460,78 +597,94 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
     sep = "─" * 72
 
     for res in filtered:
-        sp = res["start_price"]
-        dp = _auto_dp(sp)
+        lc  = res["latest_close"]
+        dp  = _auto_dp(lc)
 
         def p(x, _dp=dp) -> str:
             return f"{x:.{_dp}f}" if is_finite(x) else "N/A"
 
-        code      = res.get("disp_code", res["symbol"])
-        name      = res["name"]
-        n_ep      = res["n_episodes"]
-
-        eff_succ  = [ep for ep in res["successes"] if (ep["tp_dur_td"] or 0) <= max_hold]
-        n_succ    = len(eff_succ)
-        pct       = n_succ / n_ep * 100 if n_ep else 0
-        hist_str  = _date_range_str(res["data_start"], res["data_end"])
-        succ_str  = f"{n_succ}/{n_ep} ({pct:.0f}%)"
+        code     = res.get("disp_code", res["symbol"])
+        n_ep     = res["n_episodes"]
+        n_succ   = len(res["successes"])
+        pct      = n_succ / n_ep * 100 if n_ep else 0
+        hist_str = _date_range_str(res["data_start"], res["data_end"])
+        succ_str = f"{n_succ}/{n_ep} ({pct:.0f}%)"
 
         print(sep)
-        print(f"  {code}  ·  {name}")
+        print(f"  {code}  ·  {res['name']}")
         print(sep)
-        print(f"  History: {hist_str} | Successes: {succ_str}")
+        print(f"  History: {hist_str} | LC: {p(lc)} | Successes: {succ_str}")
         print()
 
-        # All episodes, most recent first
+        # Most recent episode first
         show_eps = sorted(res["episodes"], key=lambda ep: ep["entry_date"], reverse=True)
 
         if not show_eps:
-            print("  (no episodes)")
+            print("  (no BB(20,2) lower-band touches in this window)")
             print()
             continue
 
-        # Pre-compute all row values to determine column widths
-        sp_val = p(sp)
-        lc_val = p(res["latest_close"])
-        tp_val = p(res["tp_price"])
         rows = []
         for ep in show_eps:
             outcome = ep["outcome"]
-            is_open = outcome == "inconclusive"
-            if is_open:
+            if outcome == "win":
+                exit_str = ep["first_tp_date"] or "?"
+                dur      = f"{ep['tp_dur_td']} days" if ep["tp_dur_td"] is not None else "?"
+                status   = "[WIN]"
+            elif outcome == "fail":
+                eventual_date = ep.get("eventual_tp_date")
+                eventual_dur  = ep.get("eventual_tp_dur_td")
+                if eventual_date:
+                    # TP hit after max_hold — report actual trading days from entry
+                    exit_str = eventual_date
+                    dur      = f"{eventual_dur} days"
+                else:
+                    # TP still not hit as of today — show like an open position
+                    elapsed  = (date.today() - date.fromisoformat(ep["entry_date"])).days
+                    exit_str = "open"
+                    dur      = f"{elapsed} days"
+                status = "[FAIL]"
+            else:  # open
                 elapsed  = (date.today() - date.fromisoformat(ep["entry_date"])).days
                 exit_str = "open"
                 dur      = f"{elapsed} days"
-                status   = "[FAIL]" if elapsed > max_hold else "[OPEN]"
-            else:
-                exit_str = ep["first_tp_date"] or "?"
-                dur      = f"{ep['tp_dur_td']} days" if ep["tp_dur_td"] is not None else "?"
-                status   = "[FAIL]" if (ep["tp_dur_td"] or 0) > max_hold else "[WIN]"
-            low_val = p(ep["min_low"])
-            rows.append((ep["entry_date"], exit_str, dur, low_val, status))
+                status   = "[OPEN]"
+
+            rows.append((
+                ep["entry_date"],
+                exit_str,
+                dur,
+                p(ep["entry_price"]),
+                _fmt_z(ep["z"]),
+                _fmt_pct(ep["ep_pct"]),
+                p(ep["tp_price"]),
+                p(ep["min_low"]),
+                status,
+            ))
 
         dur_w  = max(max(len(r[2]) for r in rows), len("Duration"))
-        sp_w   = max(len(sp_val), len("SP"))
-        lc_w   = max(len(lc_val), len("LC"))
-        tp_w   = max(len(tp_val), len("TP"))
-        low_w  = max(max(len(r[3]) for r in rows), len("Low"))
-        stat_w = max(max(len(r[4]) for r in rows), len("Status"))
+        ep_w   = max(max(len(r[3]) for r in rows), len("EP"))
+        z_w    = max(max(len(r[4]) for r in rows), len("Z"))
+        pct_w  = max(max(len(r[5]) for r in rows), len("ΔEP%"))
+        tp_w   = max(max(len(r[6]) for r in rows), len("TP"))
+        low_w  = max(max(len(r[7]) for r in rows), len("Low"))
+        stat_w = max(max(len(r[8]) for r in rows), len("Status"))
 
         hdr = (
             f"  {'#':>3}  {'Entry':10}  {'→ Exit':12}  {'Duration':>{dur_w}}  "
-            f"{'SP':>{sp_w}}  {'LC':>{lc_w}}  {'TP':>{tp_w}}  {'Low':>{low_w}}  Status"
+            f"{'EP':>{ep_w}}  {'Z':>{z_w}}  {'ΔEP%':>{pct_w}}  {'TP':>{tp_w}}  {'Low':>{low_w}}  Status"
         )
         rule = (
             f"  {'─'*3}  {'─'*10}  {'─'*12}  {'─'*dur_w}  "
-            f"{'─'*sp_w}  {'─'*lc_w}  {'─'*tp_w}  {'─'*low_w}  {'─'*stat_w}"
+            f"{'─'*ep_w}  {'─'*z_w}  {'─'*pct_w}  {'─'*tp_w}  {'─'*low_w}  {'─'*stat_w}"
         )
         print(hdr)
         print(rule)
 
-        for k, (entry_date, exit_str, dur, low_val, status) in enumerate(rows, 1):
+        for k, (entry_date, exit_str, dur, ep_val, z_val, pct_val, tp_val, low_val, status) in enumerate(rows, 1):
             print(
                 f"  {k:>3}  {entry_date:10}  → {exit_str:<10}  {dur:>{dur_w}}  "
-                f"{sp_val:>{sp_w}}  {lc_val:>{lc_w}}  {tp_val:>{tp_w}}  {low_val:>{low_w}}  {status}"
+                f"{ep_val:>{ep_w}}  {z_val:>{z_w}}  {pct_val:>{pct_w}}  {tp_val:>{tp_w}}  {low_val:>{low_w}}  {status}"
             )
 
         print()
@@ -544,10 +697,9 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
 def main():
     ap = argparse.ArgumentParser(
         description=(
-            "Mean-reversion backtester: uses Yahoo Finance daily data (lookback window "
-            "configurable via --window, default 1 year) to show how reliably a stock bounced "
-            "from a given price level to a TP target, and how far price dipped during each "
-            "episode before recovering to the TP target."
+            "Mean-reversion backtester: uses Yahoo Finance daily data to backtest "
+            "how reliably a stock bounced from a BB(20,2) lower-band close touch "
+            "to a TP target within a maximum holding period."
         )
     )
     ap.add_argument(
@@ -568,59 +720,50 @@ def main():
         ),
     )
     ap.add_argument(
-        "--price",
-        nargs="+",
-        type=float,
-        default=None,
-        help=(
-            "Reference entry price(s).  Either omit (each symbol uses its own latest close) "
-            "or provide exactly N values matching the N symbols in --symbols order.  "
-            "Example: --symbols TSLA NVDA --price 360 190"
-        ),
-    )
-    ap.add_argument(
         "--tp_level",
         type=float,
         default=0.1,
-        help="Take-profit distance as a fraction of start_price (default: 0.10 = 10%%).",
+        help="Take-profit as a fraction of entry_price (default: 0.10 = 10%%).",
+    )
+    ap.add_argument(
+        "--z_thres",
+        type=float,
+        default=-2.0,
+        help=(
+            "Z-score threshold for episode trigger: episode starts when the close "
+            "Z-score (= (close − MA20) / SD20) <= this value "
+            "(default: -2.0, equivalent to touching the BB(20,2) lower band)."
+        ),
     )
     ap.add_argument(
         "--sort_by",
         choices=["succ_pct", "succ_abs", "none"],
-        default="succ_abs",
+        default="succ_pct",
         help=(
-            "Sort output by: 'succ_pct' (success %% descending), "
-            "'succ_abs' (absolute number of successes descending, default), "
-            "or 'none' (keep scan order)."
+            "Sort output: 'succ_pct' (win %% descending, default), "
+            "'succ_abs' (win count descending), or 'none'."
         ),
     )
     ap.add_argument(
         "--success_thres",
         type=float,
         default=0.5,
-        help=(
-            "Minimum effective success rate (wins within max_hold / total episodes) "
-            "to include a symbol (default: 0.5 = 50%%)."
-        ),
+        help="Minimum win rate (wins / total episodes) to include a symbol (default: 0.5).",
     )
     ap.add_argument(
         "--min_episodes",
         type=int,
         default=2,
-        help=(
-            "Minimum total number of episodes (successes + any open episode) required "
-            "to include a symbol in the output (default: 2)."
-        ),
+        help="Minimum total episodes to include a symbol (default: 2).",
     )
     ap.add_argument(
         "--max_hold",
         type=int,
-        default=50,
+        default=20,
         help=(
-            "Maximum holding period in days for a win to count as a success. "
-            "Episodes where TP took > max_hold trading days are labelled FAIL; "
-            "open episodes lasting > max_hold calendar days are labelled FAIL "
-            "(default: 50)."
+            "Maximum holding period in trading days. "
+            "TP not hit within max_hold days → FAIL; "
+            "end of data reached within max_hold → OPEN (default: 20)."
         ),
     )
     ap.add_argument(
@@ -635,7 +778,7 @@ def main():
         "--window",
         type=int,
         default=1,
-        help="Lookback window in years for historical data (default: 1).",
+        help="Lookback window in years (default: 1).",
     )
     ap.add_argument(
         "--sleep",
@@ -647,17 +790,14 @@ def main():
         "--top_N",
         type=int,
         default=10,
-        help=(
-            "After all other filters, keep only the top N symbols (default: 10). "
-            "Set to 0 to disable."
-        ),
+        help="Keep only the top N symbols after all filters (default: 10; 0 = show all).",
     )
     ap.add_argument(
         "--no_filters",
         action="store_true",
         help=(
             "Disable all default output filters: sets min_episodes=0, "
-            "success_thres=0.0, and top_N=0 so every symbol is shown."
+            "success_thres=0.0, and top_N=0."
         ),
     )
     args = ap.parse_args()
@@ -673,72 +813,33 @@ def main():
     )
 
     # When symbols are explicitly provided, disable all filters automatically.
-    # max_hold is intentionally NOT overridden here — it controls WIN/FAIL labels
-    # and the successes count, which should always reflect the user's threshold.
     if not is_auto or args.no_filters:
         args.min_episodes  = 0
         args.success_thres = 0.0
         args.top_N         = 0
 
-    # Symbols must be provided for all modes (unless using 'auto' later).
     if not args.symbols:
-        print(
-            "ERROR: No symbols provided. Please supply at least one via --symbols.",
-            file=sys.stderr,
-        )
+        print("ERROR: No symbols provided. Please supply at least one via --symbols.", file=sys.stderr)
         return
 
-    # Handle 'auto' mode for symbols: load from all_<mode>_stocks.txt
-    if args.symbols and len(args.symbols) == 1 and args.symbols[0].lower() == "auto":
+    # Resolve 'auto' from file
+    if is_auto:
         auto_file = f"all_{args.mode}_stocks.txt"
         try:
             with open(auto_file, "r", encoding="utf-8") as f:
                 text = f.read()
         except FileNotFoundError:
-            print(
-                f"ERROR: Auto symbols file not found: {auto_file}",
-                file=sys.stderr,
-            )
+            print(f"ERROR: Auto symbols file not found: {auto_file}", file=sys.stderr)
             return
         except Exception as e:
-            print(
-                f"ERROR: Failed to read auto symbols file {auto_file}: {e}",
-                file=sys.stderr,
-            )
+            print(f"ERROR: Failed to read auto symbols file {auto_file}: {e}", file=sys.stderr)
             return
         input_symbols = text.split()
         if not input_symbols:
-            print(
-                f"ERROR: Auto symbols file {auto_file} contains no symbols.",
-                file=sys.stderr,
-            )
+            print(f"ERROR: Auto symbols file {auto_file} contains no symbols.", file=sys.stderr)
             return
     else:
         input_symbols = args.symbols
-
-    # Special case: 1 unique symbol + multiple start prices → expand symbol list
-    _is_multi_price = (
-        args.price is not None
-        and len(args.price) > 1
-        and len({s.lower() for s in input_symbols}) == 1
-    )
-    if _is_multi_price:
-        input_symbols = [input_symbols[0]] * len(args.price)
-
-    # Validate --price count against input symbols before normalization
-    if args.price is not None and len(args.price) != len(input_symbols):
-        print(
-            f"ERROR: --price has {len(args.price)} value(s) "
-            f"but --symbols resolved to {len(input_symbols)} ticker(s).  "
-            "They must match 1-to-1, or omit --price entirely to use latest closes.",
-            file=sys.stderr,
-        )
-        return
-
-    input_start_prices: list[float | None] = (
-        list(args.price) if args.price is not None
-        else [None] * len(input_symbols)
-    )
 
     exclude_symbols = args.exclude if args.exclude else []
 
@@ -751,55 +852,36 @@ def main():
     elif args.mode == "id":
         exclude_normalized = {ensure_idx(s) for s in exclude_symbols}
         normalized_symbols = [ensure_idx(s) for s in input_symbols]
-    else:  # 'us'
+    else:  # us
         exclude_normalized = {s.strip().upper() for s in exclude_symbols}
         normalized_symbols = [s.strip().upper() for s in input_symbols]
 
-    counts = Counter(normalized_symbols)
+    counts     = Counter(normalized_symbols)
     duplicates = [f"{sym} (x{counts[sym]})" for sym in counts if counts[sym] > 1]
-    if duplicates and not _is_multi_price:
-        print(
-            "[WARN] Duplicate codes detected (will be de-duplicated): "
-            + ", ".join(duplicates)
-        )
+    if duplicates:
+        print("[WARN] Duplicate codes detected (will be de-duplicated): " + ", ".join(duplicates))
 
-    # Deduplicate and exclude, carrying start_price values along
-    # Key by (sym, sp) so the same symbol at different price levels is kept distinct.
-    seen: set = set()
-    symbols_si: list[str] = []
-    start_prices_si: list[float | None] = []
-    for sym, sp in zip(normalized_symbols, input_start_prices):
-        key = (sym, sp)
-        if key not in seen and sym not in exclude_normalized:
-            seen.add(key)
-            symbols_si.append(sym)
-            start_prices_si.append(sp)
+    seen: set      = set()
+    symbols_list: list[str] = []
+    for sym in normalized_symbols:
+        if sym not in seen and sym not in exclude_normalized:
+            seen.add(sym)
+            symbols_list.append(sym)
 
     print("[INFO] Fetching scanning data...")
     try:
-        warm_up_cookies_and_crumb(symbols_si[0])
+        warm_up_cookies_and_crumb(symbols_list[0])
     except Exception:
         pass
 
-    name_map = get_name_map(symbols_si)
+    name_map = get_name_map(symbols_list)
 
-    chart_cache: dict[str, dict] = {}
-    sym_counts = Counter(symbols_si)
     results = []
-    for sym, sp in tqdm(
-        zip(symbols_si, start_prices_si),
-        desc="Scanning",
-        unit="symbol",
-        total=len(symbols_si),
-    ):
+    for sym in tqdm(symbols_list, desc="Scanning", unit="symbol"):
         try:
-            if sym not in chart_cache:
-                chart_cache[sym] = fetch_chart(sym, args.window)
-                time.sleep(args.sleep)
-            chart = chart_cache[sym]
-            res   = analyze_mr(sym, name_map.get(sym, sym), chart, sp, args.tp_level)
+            chart = fetch_chart(sym, args.window)
+            res   = analyze_mr_bb(sym, name_map.get(sym, sym), chart, args.tp_level, args.max_hold, args.z_thres)
 
-            # Compute display code (strip mode suffix, mirrors scan_mr_ma20.py)
             if args.mode == "sg":
                 disp_code = sym.removesuffix(".SI")
             elif args.mode == "cc":
@@ -813,35 +895,24 @@ def main():
                     disp_code = sym
             else:
                 disp_code = sym
-            # Append @<price> when the same symbol appears at multiple price levels
-            if sym_counts[sym] > 1:
-                raw_sp = res["start_price"]
-                sp_str = f"{raw_sp:.0f}" if raw_sp == int(raw_sp) else f"{raw_sp:g}"
-                disp_code = f"{disp_code}@{sp_str}"
             res["disp_code"] = disp_code
 
             results.append(res)
         except Exception as e:
             print(f"[WARN] {sym}: {e}", file=sys.stderr)
+        finally:
+            time.sleep(args.sleep)
 
-    # Sort before printing
     if args.sort_by in ("succ_pct", "succ_abs"):
-        mh = args.max_hold
         if args.sort_by == "succ_pct":
             results.sort(
-                key=lambda r: (
-                    sum(1 for ep in r["successes"] if (ep["tp_dur_td"] or 0) <= mh)
-                    / r["n_episodes"] if r["n_episodes"] else 0
-                ),
+                key=lambda r: len(r["successes"]) / r["n_episodes"] if r["n_episodes"] else 0.0,
                 reverse=True,
             )
         else:  # succ_abs
-            results.sort(
-                key=lambda r: sum(1 for ep in r["successes"] if (ep["tp_dur_td"] or 0) <= mh),
-                reverse=True,
-            )
+            results.sort(key=lambda r: len(r["successes"]), reverse=True)
 
-    _print_summary(results, args.min_episodes, args.max_hold, args.success_thres, args.top_N)
+    _print_summary(results, args.min_episodes, args.success_thres, args.top_N)
 
 
 if __name__ == "__main__":
