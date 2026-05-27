@@ -16,9 +16,9 @@ For each OHLC touch of start_price one episode is generated:
 Usage example:
   python scan_mr_backtest.py --mode sg --symbols D05 C6L --tp_level 0.08
   python scan_mr_backtest.py --mode us --symbols AAPL MSFT NVDA --sort_by successes
-  python scan_mr_backtest.py --mode us --symbols NVDA --start_price 800 --tp_level 0.15
-  python scan_mr_backtest.py --mode us --symbols TSLA NVDA MSFT --start_price 360 190 400
-  python scan_mr_backtest.py --mode us --symbols NVDA --start_price 190 200 210
+  python scan_mr_backtest.py --mode us --symbols NVDA --price 800 --tp_level 0.15
+  python scan_mr_backtest.py --mode us --symbols TSLA NVDA MSFT --price 360 190 400
+  python scan_mr_backtest.py --mode us --symbols NVDA --price 190 200 210
   python scan_mr_backtest.py --mode cc --symbols BTC ETH --tp_level 0.2
   python scan_mr_backtest.py --mode sg --symbols auto --min_episodes 3 --sort_by succ_abs
   python scan_mr_backtest.py --mode us --symbols AAPL --window 3
@@ -31,10 +31,10 @@ Notes:
     'id' for indexes (codes like '^STI', '^DJI'; used as-is for Yahoo, but '^' stripped in
          display; any dot-suffix tickers e.g. ES3.SI are also accepted and suffix is stripped).
 - --symbols takes space-separated codes (no quotes), or 'auto' to load from all_<mode>_stocks.txt.
-- --start_price sets the reference price used for entry detection and TP calculation:
+- --price sets the reference price used for entry detection and TP calculation:
     * omit to use each symbol's own latest close (default).
     * if provided, must supply exactly N values in the same order as --symbols.
-      Example: --symbols TSLA NVDA MSFT --start_price 360 190 400
+      Example: --symbols TSLA NVDA MSFT --price 360 190 400
     * an episode starts on the earliest day where start_price falls within that day's OHLC.
 - --tp_level sets the take-profit distance as a fraction of start_price:
     * TP is triggered when intraday high >= start_price * (1 + tp_level).
@@ -56,7 +56,7 @@ Notes:
       as a timeout (not counted as a success).
     * any open/pending episode that has already lasted >= max_hold calendar days is
       labelled OPEN/FAIL in the breakdown.
-    * default: 80.
+    * default: 50.
 - --exclude removes the specified symbols from being processed (mode normalization is applied).
 - --sleep sets the delay in seconds between Yahoo Finance requests (default: 0.5).
 - --window sets the historical lookback period in years (any positive integer, default: 1).
@@ -568,14 +568,14 @@ def main():
         ),
     )
     ap.add_argument(
-        "--start_price",
+        "--price",
         nargs="+",
         type=float,
         default=None,
         help=(
             "Reference entry price(s).  Either omit (each symbol uses its own latest close) "
             "or provide exactly N values matching the N symbols in --symbols order.  "
-            "Example: --symbols TSLA NVDA --start_price 360 190"
+            "Example: --symbols TSLA NVDA --price 360 190"
         ),
     )
     ap.add_argument(
@@ -615,12 +615,12 @@ def main():
     ap.add_argument(
         "--max_hold",
         type=int,
-        default=80,
+        default=50,
         help=(
             "Maximum holding period in days for a win to count as a success. "
             "Episodes where TP took >= max_hold trading days are labelled TIMEOUT; "
             "open episodes lasting >= max_hold calendar days are labelled OPEN/FAIL "
-            "(default: 80)."
+            "(default: 50)."
         ),
     )
     ap.add_argument(
@@ -717,25 +717,25 @@ def main():
 
     # Special case: 1 unique symbol + multiple start prices → expand symbol list
     _is_multi_price = (
-        args.start_price is not None
-        and len(args.start_price) > 1
+        args.price is not None
+        and len(args.price) > 1
         and len({s.lower() for s in input_symbols}) == 1
     )
     if _is_multi_price:
-        input_symbols = [input_symbols[0]] * len(args.start_price)
+        input_symbols = [input_symbols[0]] * len(args.price)
 
-    # Validate --start_price count against input symbols before normalization
-    if args.start_price is not None and len(args.start_price) != len(input_symbols):
+    # Validate --price count against input symbols before normalization
+    if args.price is not None and len(args.price) != len(input_symbols):
         print(
-            f"ERROR: --start_price has {len(args.start_price)} value(s) "
+            f"ERROR: --price has {len(args.price)} value(s) "
             f"but --symbols resolved to {len(input_symbols)} ticker(s).  "
-            "They must match 1-to-1, or omit --start_price entirely to use latest closes.",
+            "They must match 1-to-1, or omit --price entirely to use latest closes.",
             file=sys.stderr,
         )
         return
 
     input_start_prices: list[float | None] = (
-        list(args.start_price) if args.start_price is not None
+        list(args.price) if args.price is not None
         else [None] * len(input_symbols)
     )
 
