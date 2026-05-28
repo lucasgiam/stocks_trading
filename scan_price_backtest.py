@@ -45,8 +45,8 @@ Notes:
     * TP is triggered when intraday high >= start_price * (1 + tp_level/100).
     * default: 10 (10%%).
 - --sort_by controls sorting of the final summary table (applies to --symbols auto only):
-    * 'succ_pct':  sort by MR success rate %% (successes / total episodes), descending (default).
-    * 'succ_abs':  sort by absolute number of successes, descending.
+    * 'succ_pct':  sort by MR success rate %% (successes / total episodes), descending.
+    * 'succ_abs':  sort by absolute number of successes, descending (default).
     * 'none':      keep scan order as processed.
 - --min_episodes filters the output to only show symbols with at least N total episodes
     (default: 2; ignored when explicit symbols given).
@@ -626,10 +626,10 @@ def main():
     ap.add_argument(
         "--sort_by",
         choices=["succ_pct", "succ_abs", "none"],
-        default="succ_pct",
+        default="succ_abs",
         help=(
-            "Sort output by: 'succ_pct' (success %% descending, default), "
-            "'succ_abs' (absolute number of successes descending), "
+            "Sort output by: 'succ_pct' (success %% descending), "
+            "'succ_abs' (absolute number of successes descending, default), "
             "or 'none' (keep scan order)."
         ),
     )

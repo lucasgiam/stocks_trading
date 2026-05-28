@@ -19,12 +19,12 @@ Episode model:
   OPEN     : end of data reached before max_hold elapsed and TP not yet hit.
 
 Reset rule (prevents chaining episodes inside a persistent downtrend):
-  After each episode, a new episode may only start once Z >= z_thres/4 has been
+  After each episode, a new episode may only start once Z >= z_thres/10 has been
   seen at least once since the trigger day.  If the reset level was reached during
   the episode, the next trigger search resumes normally from i_next.  If not (e.g.
   the stock stayed deeply oversold throughout), the scan fast-forwards until
-  Z >= z_thres/4 before looking for the next trigger.
-  Example: z_thres = -2.0 → reset level = -0.5.
+  Z >= z_thres/10 before looking for the next trigger.
+  Example: z_thres = -2.0 → reset level = -0.2.
 
 BB(20,2):
   MA20     = simple 20-day moving average of closes.
@@ -59,8 +59,8 @@ Notes:
     * End of data reached before max_hold elapsed without TP → OPEN.
     * default: 20.
 - --sort_by controls sorting of the final summary table (applies to --symbols auto only):
-    * 'succ_pct':  sort by win rate %% (wins / total episodes), descending (default).
-    * 'succ_abs':  sort by absolute number of wins, descending.
+    * 'succ_pct':  sort by win rate %% (wins / total episodes), descending.
+    * 'succ_abs':  sort by absolute number of wins, descending (default).
     * 'none':      keep scan order.
 - --min_episodes filters the output to only show symbols with at least N total episodes
     (default: 2; ignored when explicit symbols given).
@@ -534,11 +534,11 @@ def analyze_mr_bb(
         })
 
         # ── Reset condition ───────────────────────────────────────────────────
-        # A new episode is only allowed after Z >= z_thres/4 has been observed
+        # A new episode is only allowed after Z >= z_thres/10 has been observed
         # at least once since the trigger.  This prevents chaining episodes
         # inside a persistent downtrend.  Check whether the reset was already
         # seen within the episode window (trigger_i .. i_next-1).
-        reset_level = z_thres / 4.0
+        reset_level = z_thres / 10.0
         reset_met = any(
             z_arr[k] is not None and is_finite(z_arr[k]) and z_arr[k] >= reset_level
             for k in range(trigger_i, i_next)
@@ -772,10 +772,10 @@ def main():
     ap.add_argument(
         "--sort_by",
         choices=["succ_pct", "succ_abs", "none"],
-        default="succ_pct",
+        default="succ_abs",
         help=(
-            "Sort output: 'succ_pct' (win %% descending, default), "
-            "'succ_abs' (win count descending), or 'none'."
+            "Sort output: 'succ_pct' (win %% descending), "
+            "'succ_abs' (win count descending, default), or 'none'."
         ),
     )
     ap.add_argument(

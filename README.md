@@ -106,7 +106,7 @@ Key flags:
 | `--min_episodes` | `2` | Minimum total episodes to include a symbol |
 | `--success_thres` | `0.5` | Minimum win rate (0.0–1.0) to include a symbol |
 | `--top_N` | `10` | Keep only the top N symbols after filtering; `0` = show all |
-| `--sort_by` | `succ_pct` | `succ_pct`, `succ_abs`, or `none` |
+| `--sort_by` | `succ_abs` | `succ_pct`, `succ_abs`, or `none` |
 | `--no_filters` | off | Disables min_episodes, success_thres, and top_N filters |
 
 ---
@@ -115,7 +115,7 @@ Key flags:
 
 Simulates how a stock has historically behaved after the **close Z-score falls to or below a threshold** (default −2.0, equivalent to touching the BB(20,2) lower band). Trigger day is T; entry is the **following trading day's open** (T+1). The episode is WIN if the intraday high reaches TP within `--max_hold` trading days, FAIL if it doesn't, or OPEN if the data window ends before `max_hold` elapses.
 
-A **reset rule** prevents chaining: after each episode, the next trigger can only fire once Z ≥ z_thres/4 has been observed since the trigger day, guarding against repeated entries inside a persistent downtrend (e.g. with the default z_thres = −2.0, reset level = −0.5).
+A **reset rule** prevents chaining: after each episode, the next trigger can only fire once Z ≥ z_thres/10 has been observed since the trigger day, guarding against repeated entries inside a persistent downtrend (e.g. with the default z_thres = −2.0, reset level = −0.2).
 
 ```bash
 # Backtest NVDA with default 10% TP, 20-day max hold
@@ -149,7 +149,7 @@ Key flags:
 | `--min_episodes` | `2` | Minimum total episodes to include a symbol |
 | `--success_thres` | `0.5` | Minimum win rate (0.0–1.0) to include a symbol |
 | `--top_N` | `10` | Keep only the top N symbols after filtering; `0` = show all |
-| `--sort_by` | `succ_pct` | `succ_pct`, `succ_abs`, or `none` |
+| `--sort_by` | `succ_abs` | `succ_pct`, `succ_abs`, or `none` |
 | `--no_filters` | off | Disables min_episodes, success_thres, and top_N filters |
 
 ---
