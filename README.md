@@ -73,60 +73,65 @@ Key flags:
 
 ## scan_price_backtest.py — price-level backtester
 
-Simulates how a stock has historically bounced from a reference price level to a TP target. Each touch of the reference price starts a new episode; the episode is a win if the intraday high reaches the TP within `--max_hold` trading days.
+Simulates how a stock has historically bounced from a reference price level to a TP target. Each day the low touches the reference price starts a new episode; the outcome is WIN if the intraday high reaches the TP within `--max_hold` trading days, FAIL if it doesn't, or OPEN if the data window ends before `max_hold` elapses.
 
 ```bash
 # Backtest NVDA from its latest close, 10% TP, 1-year window (defaults)
 python scan_price_backtest.py --mode us --symbols NVDA
 
 # Specific entry price and TP level
-python scan_price_backtest.py --mode us --symbols NVDA --start_price 800 --tp_level 0.15
+python scan_price_backtest.py --mode us --symbols NVDA --price 800 --tp_level 15
 
 # Multiple symbols with per-symbol entry prices
-python scan_price_backtest.py --mode us --symbols TSLA NVDA MSFT --start_price 360 190 400
+python scan_price_backtest.py --mode us --symbols TSLA NVDA MSFT --price 360 190 400
 
-# Auto-scan all SGX stocks over 3 years, top 10 by success count
-python scan_price_backtest.py --mode sg --symbols auto --window 3 --sort_by succ_abs
+# Auto-scan all SGX stocks over 3 years, top 10 by win rate
+python scan_price_backtest.py --mode sg --symbols auto --window 3 --sort_by succ_pct
 
 # Auto-scan, show all results with no filters
 python scan_price_backtest.py --mode sg --symbols auto --no_filters
 
 # Crypto with 20% TP
-python scan_price_backtest.py --mode cc --symbols BTC ETH --tp_level 0.2
+python scan_price_backtest.py --mode cc --symbols BTC ETH --tp_level 20
 ```
 
 Key flags:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--start_price` | latest close | Reference entry price(s); provide N values for N symbols |
-| `--tp_level` | `0.10` | TP as a fraction of start_price (e.g. `0.10` = 10%) |
+| `--price` | latest close | Reference entry price(s); provide N values for N symbols |
+| `--tp_level` | `10` | TP as a percentage of entry price (e.g. `10` = 10%) |
 | `--window` | `1` | Lookback in years |
-| `--max_hold` | `80` | Episodes where TP takes ≥ max_hold trading days are labelled TIMEOUT |
+| `--max_hold` | `20` | TP not hit within max_hold trading days → FAIL; end of data within max_hold → OPEN |
 | `--min_episodes` | `2` | Minimum total episodes to include a symbol |
-| `--success_thres` | `0.5` | Minimum effective success rate (0.0–1.0) to include a symbol |
+| `--success_thres` | `0.5` | Minimum win rate (0.0–1.0) to include a symbol |
 | `--top_N` | `10` | Keep only the top N symbols after filtering; `0` = show all |
-| `--sort_by` | `succ_abs` | `succ_pct`, `succ_abs`, or `none` |
-| `--no_filters` | off | Sets min_episodes=0, success_thres=0.0, max_hold=∞, top_N=0 |
+| `--sort_by` | `succ_pct` | `succ_pct`, `succ_abs`, or `none` |
+| `--no_filters` | off | Disables min_episodes, success_thres, and top_N filters |
 
 ---
 
-## scan_mr_backtest.py — BB(20,2) MR backtester
+## scan_mr_backtest.py — Z-score MR backtester
 
-Simulates how a stock has historically behaved after the **close price touches the BB(20,2) lower band**. Each first touch starts an episode; the episode is a WIN if the intraday high reaches the TP within `--max_hold` trading days, FAIL if it doesn't, or OPEN if the episode is still live at the end of the data window.
+Simulates how a stock has historically behaved after the **close Z-score falls to or below a threshold** (default −2.0, equivalent to touching the BB(20,2) lower band). Trigger day is T; entry is the **following trading day's open** (T+1). The episode is WIN if the intraday high reaches TP within `--max_hold` trading days, FAIL if it doesn't, or OPEN if the data window ends before `max_hold` elapses.
+
+A **reset rule** prevents chaining: after each episode, the next trigger can only fire once Z ≥ z_thres/4 has been observed since the trigger day, guarding against repeated entries inside a persistent downtrend (e.g. with the default z_thres = −2.0, reset level = −0.5).
 
 ```bash
 # Backtest NVDA with default 10% TP, 20-day max hold
 python scan_mr_backtest.py --mode us --symbols NVDA
 
 # Custom TP level
-python scan_mr_backtest.py --mode us --symbols AAPL MSFT NVDA --tp_level 0.08
+python scan_mr_backtest.py --mode us --symbols AAPL MSFT NVDA --tp_level 8
 
 # Crypto with 20% TP
-python scan_mr_backtest.py --mode cc --symbols BTC ETH --tp_level 0.2
+python scan_mr_backtest.py --mode cc --symbols BTC ETH --tp_level 20
 
-# Auto-scan all SGX stocks over 3 years, top 10 by win count
-python scan_mr_backtest.py --mode sg --symbols auto --window 3 --sort_by succ_abs
+# Custom Z-score threshold with ΔLC% filter
+python scan_mr_backtest.py --mode us --symbols NVDA --z_thres -1.5 --delta_thres -3
+
+# Auto-scan all SGX stocks over 3 years, top 10 by win rate
+python scan_mr_backtest.py --mode sg --symbols auto --window 3 --sort_by succ_pct
 
 # Auto-scan, show all results with no filters
 python scan_mr_backtest.py --mode sg --symbols auto --no_filters
@@ -136,14 +141,16 @@ Key flags:
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--tp_level` | `0.10` | TP as a fraction of entry_close (e.g. `0.10` = 10%) |
-| `--max_hold` | `20` | Trading days before an un-hit episode is labelled FAIL |
+| `--tp_level` | `10` | TP as a percentage of entry_price (e.g. `10` = 10%) |
+| `--z_thres` | `-2.0` | Z-score trigger threshold; episode starts when Z ≤ z_thres |
+| `--delta_thres` | — | Additional filter: episode only starts when ΔLC% ≤ delta_thres (ΔLC% = 100×(close−MA20)/MA20 on trigger day) |
+| `--max_hold` | `20` | TP not hit within max_hold trading days → FAIL; end of data within max_hold → OPEN |
 | `--window` | `1` | Lookback in years |
 | `--min_episodes` | `2` | Minimum total episodes to include a symbol |
 | `--success_thres` | `0.5` | Minimum win rate (0.0–1.0) to include a symbol |
 | `--top_N` | `10` | Keep only the top N symbols after filtering; `0` = show all |
-| `--sort_by` | `succ_abs` | `succ_pct`, `succ_abs`, or `none` |
-| `--no_filters` | off | Sets min_episodes=0, success_thres=0.0, top_N=0 |
+| `--sort_by` | `succ_pct` | `succ_pct`, `succ_abs`, or `none` |
+| `--no_filters` | off | Disables min_episodes, success_thres, and top_N filters |
 
 ---
 

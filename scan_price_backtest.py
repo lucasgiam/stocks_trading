@@ -6,20 +6,23 @@ Mean-reversion backtester: for each symbol, pulls daily OHLCV from Yahoo Finance
 stock has historically behaved after touching a reference price level.
 
 For each OHLC touch of start_price one episode is generated:
-  Entry    : earliest day where start_price falls within the day's OHLC (low <= sp <= high)
-  Scan     : every day after entry, until intraday high >= tp_price (TP hit) or end of data
-  TP       : fixed to start_price * (1 + tp_level) for all episodes.
-             Detected via intraday high (not close):
-               win          — high >= tp_price
-               inconclusive — TP never hit by end of data
+  Trigger  : day where start_price falls within the day's OHLC (low <= sp <= high).
+  Entry    : that same day (entry_close = close).
+  TP       : start_price * (1 + tp_level/100).  Detected via intraday high from the
+             FOLLOWING session onward.
+  WIN      : intraday high >= tp_price within max_hold trading days.
+  FAIL     : max_hold trading days elapsed without TP hit.
+             Eventual TP hit (if any) is recorded for reference; next episode search
+             resumes from entry_i + max_hold.
+  OPEN     : end of data reached before max_hold elapsed and TP not yet hit.
 
 Usage example:
-  python scan_price_backtest.py --mode sg --symbols D05 C6L --tp_level 0.08
+  python scan_price_backtest.py --mode sg --symbols D05 C6L --tp_level 8
   python scan_price_backtest.py --mode us --symbols AAPL MSFT NVDA --sort_by succ_abs
-  python scan_price_backtest.py --mode us --symbols NVDA --price 800 --tp_level 0.15
+  python scan_price_backtest.py --mode us --symbols NVDA --price 800 --tp_level 15
   python scan_price_backtest.py --mode us --symbols TSLA NVDA MSFT --price 360 190 400
   python scan_price_backtest.py --mode us --symbols NVDA --price 190 200 210
-  python scan_price_backtest.py --mode cc --symbols BTC ETH --tp_level 0.2
+  python scan_price_backtest.py --mode cc --symbols BTC ETH --tp_level 20
   python scan_price_backtest.py --mode sg --symbols auto --min_episodes 3 --sort_by succ_abs
   python scan_price_backtest.py --mode us --symbols AAPL --window 3
 
@@ -31,32 +34,32 @@ Notes:
     'id' for indexes (codes like '^STI', '^DJI'; used as-is for Yahoo, but '^' stripped in
          display; any dot-suffix tickers e.g. ES3.SI are also accepted and suffix is stripped).
 - --symbols takes space-separated codes (no quotes), or 'auto' to load from all_<mode>_stocks.txt.
+    When explicit symbols are provided (not 'auto'), all output filters are disabled
+    automatically (equivalent to --no_filters) so every symbol is always shown.
 - --price sets the reference price used for entry detection and TP calculation:
     * omit to use each symbol's own latest close (default).
     * if provided, must supply exactly N values in the same order as --symbols.
       Example: --symbols TSLA NVDA MSFT --price 360 190 400
     * an episode starts on the earliest day where start_price falls within that day's OHLC.
-- --tp_level sets the take-profit distance as a fraction of start_price:
-    * TP is triggered when intraday high >= start_price * (1 + tp_level).
-    * default: 0.10 (10%%).
-- --sort_by controls sorting of the final summary table:
-    * 'succ_pct':  sort by MR success rate % (successes / total episodes), descending.
-    * 'succ_abs':  sort by absolute number of successes, descending (default).
+- --tp_level sets the take-profit distance as a percentage of start_price:
+    * TP is triggered when intraday high >= start_price * (1 + tp_level/100).
+    * default: 10 (10%%).
+- --sort_by controls sorting of the final summary table (applies to --symbols auto only):
+    * 'succ_pct':  sort by MR success rate %% (successes / total episodes), descending (default).
+    * 'succ_abs':  sort by absolute number of successes, descending.
     * 'none':      keep scan order as processed.
 - --min_episodes filters the output to only show symbols with at least N total episodes
-    (successes + any open/pending episode counted together):
-    * default: 2 (symbols with fewer than 2 episodes are hidden).
-    * set higher (e.g. 4) to focus on names with a richer backtest sample.
-- --success_thres filters the output to only show symbols whose effective success rate
-    (wins within max_hold / total episodes) meets the threshold:
-    * default: 0.5 (50%%).
-    * accepts a value between 0.0 and 1.0.
-- --max_hold caps the maximum acceptable holding period for a win:
-    * any episode where TP was hit but took > max_hold trading days is labelled FAIL
-      (not counted as a success).
-    * any open/pending episode that has already lasted > max_hold calendar days is
-      labelled FAIL in the breakdown.
-    * default: 50.
+    (default: 2; ignored when explicit symbols given).
+- --success_thres filters the output to only show symbols whose win rate
+    (wins / total episodes) meets the threshold
+    (default: 0.5 = 50%%; ignored when explicit symbols given).
+- --top_N keep only the top N symbols after all filters (default: 10; 0 = show all;
+    ignored when explicit symbols given).
+- --no_filters disables min_episodes, success_thres, and top_N filters (useful with 'auto').
+- --max_hold sets the maximum holding period in trading days:
+    * TP not hit within max_hold trading days → FAIL (eventual TP hit, if any, is tracked).
+    * End of data reached within max_hold without TP → OPEN.
+    * default: 20.
 - --exclude removes the specified symbols from being processed (mode normalization is applied).
 - --sleep sets the delay in seconds between Yahoo Finance requests (default: 0.5).
 - --window sets the historical lookback period in years (any positive integer, default: 1).
@@ -293,24 +296,20 @@ def analyze_mr(
     chart: dict,
     start_price: float | None,
     tp_level: float,
+    max_hold: int,
 ) -> dict:
     """
     Episode-based MR analysis using intraday high for TP detection.
 
     Episode model:
-      Episode start: earliest day in the lookback window where start_price falls within the
-                     day's OHLC range (low <= sp <= high).
-                     After each TP hit, the next such day starts the next episode.
-      Episode end  : first day (from next day after entry) where high >= tp_price.
-                     If TP never hit → episode runs to present day (pending).
-      Next episode : after TP hit, find next day where sp falls within OHLC → repeat.
-
-    TP is fixed to start_price (same for all episodes):
-      tp_price = sp * (1 + tp_level)
-
-    Classification:
-      win          — high >= tp_price
-      inconclusive — TP never hit by end of data
+      Trigger  : day where start_price falls within the OHLC range (low <= sp <= high).
+      Entry    : that same day (entry_close = close).
+      TP       : sp * (1 + tp_level).  Checked via intraday high from the FOLLOWING session.
+      WIN      : intraday high >= tp_price within max_hold trading days.
+      FAIL     : max_hold trading days elapsed without TP hit.
+                 Scan continues beyond max_hold to record eventual TP date if hit later.
+                 Next episode search resumes from entry_i + max_hold.
+      OPEN     : end of data reached before max_hold elapsed and TP not yet hit.
     """
     closes     = chart["close"]
     highs      = chart["high"]
@@ -357,49 +356,84 @@ def analyze_mr(
         entry_ts = valid_days[i][1]
         entry_c  = valid_days[i][2]
 
-        # Scan from the NEXT day — entry is triggered intraday, so TP can only
-        # be acted on from the following session onward.
+        # Scan the next max_hold bars (from the following session) for a TP hit
+        search_end = min(entry_i + 1 + max_hold, m)
         first_tp_k = None
 
-        for k in range(entry_i + 1, m):
+        for k in range(entry_i + 1, search_end):
             _, _, _, kh, _ = valid_days[k]
             if kh >= tp_price:
                 first_tp_k = k
-                break  # TP hit — episode over
-
-        tp_dur = first_tp_k - entry_i if first_tp_k is not None else None
-
-        scan_end  = (first_tp_k + 1) if first_tp_k is not None else m
-        scan_lows = [valid_days[k][4] for k in range(entry_i + 1, scan_end)]
-        min_low   = min(scan_lows) if scan_lows else sp
-        min_low_ts = next(
-            (valid_days[k][1] for k in range(entry_i + 1, scan_end)
-             if valid_days[k][4] == min_low),
-            None,
-        ) if min_low is not None else None
-
-        outcome = "win" if first_tp_k is not None else "inconclusive"
-
-        episodes.append({
-            "entry_date":    ts_to_date(entry_ts),
-            "entry_close":   entry_c,
-            "outcome":       outcome,
-            "first_tp_date": ts_to_date(valid_days[first_tp_k][1]) if first_tp_k is not None else None,
-            "tp_dur_td":     tp_dur,
-            "min_low":       min_low,
-            "min_low_date":  ts_to_date(min_low_ts) if min_low_ts else None,
-        })
+                break
 
         if first_tp_k is not None:
-            i = first_tp_k + 1  # look for next episode after TP day
+            # WIN
+            outcome          = "win"
+            tp_dur           = first_tp_k - entry_i
+            fail_date        = None
+            eventual_tp_date = None
+            eventual_tp_dur  = None
+            scan_end_low     = first_tp_k + 1
+            i_next           = first_tp_k + 1
+        elif entry_i + 1 + max_hold > m:
+            # OPEN: ran out of data before max_hold expired
+            outcome          = "open"
+            tp_dur           = None
+            fail_date        = None
+            eventual_tp_date = None
+            eventual_tp_dur  = None
+            scan_end_low     = m
+            i_next           = m
         else:
-            break  # last episode — TP never hit, stop
+            # FAIL: max_hold exhausted — scan further for eventual TP
+            outcome      = "fail"
+            tp_dur       = None
+            fail_date    = ts_to_date(valid_days[search_end - 1][1])
+            scan_end_low = search_end
+            i_next       = search_end
+
+            eventual_tp_k = None
+            for _k in range(search_end, m):
+                if valid_days[_k][3] >= tp_price:
+                    eventual_tp_k = _k
+                    break
+            eventual_tp_date = (
+                ts_to_date(valid_days[eventual_tp_k][1]) if eventual_tp_k is not None else None
+            )
+            eventual_tp_dur = (
+                eventual_tp_k - entry_i if eventual_tp_k is not None else None
+            )
+
+        scan_lows  = [valid_days[k][4] for k in range(entry_i + 1, scan_end_low)]
+        min_low    = min(scan_lows) if scan_lows else sp
+        min_low_ts = next(
+            (valid_days[k][1] for k in range(entry_i + 1, scan_end_low)
+             if valid_days[k][4] == min_low),
+            None,
+        ) if scan_lows else None
+
+        episodes.append({
+            "entry_date":         ts_to_date(entry_ts),
+            "entry_close":        entry_c,
+            "outcome":            outcome,
+            "first_tp_date":      ts_to_date(valid_days[first_tp_k][1]) if first_tp_k is not None else None,
+            "tp_dur_td":          tp_dur,
+            "fail_date":          fail_date,
+            "eventual_tp_date":   eventual_tp_date,
+            "eventual_tp_dur_td": eventual_tp_dur,
+            "td_elapsed":         m - entry_i,
+            "min_low":            min_low,
+            "min_low_date":       ts_to_date(min_low_ts) if min_low_ts else None,
+        })
+
+        if outcome == "open":
+            break
+        i = i_next
 
     successes = [ep for ep in episodes if ep["outcome"] == "win"]
 
-    # Last episode with no TP = the ongoing/pending one
     last_ep = episodes[-1] if episodes else None
-    pending = last_ep if (last_ep and last_ep["outcome"] == "inconclusive") else None
+    pending = last_ep if (last_ep and last_ep["outcome"] == "open") else None
 
     return {
         "symbol":       symbol,
@@ -435,10 +469,8 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
     total_processed = len(results)
 
     def _eff_rate(r: dict) -> float:
-        if not r["n_episodes"]:
-            return 0.0
-        wins = sum(1 for ep in r["successes"] if (ep["tp_dur_td"] or 0) <= max_hold)
-        return wins / r["n_episodes"]
+        # successes already only contain WIN episodes (TP hit within max_hold)
+        return len(r["successes"]) / r["n_episodes"] if r["n_episodes"] else 0.0
 
     filtered = [
         r for r in results
@@ -470,8 +502,7 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
         name      = res["name"]
         n_ep      = res["n_episodes"]
 
-        eff_succ  = [ep for ep in res["successes"] if (ep["tp_dur_td"] or 0) <= max_hold]
-        n_succ    = len(eff_succ)
+        n_succ    = len(res["successes"])
         pct       = n_succ / n_ep * 100 if n_ep else 0
         hist_str  = _date_range_str(res["data_start"], res["data_end"])
         succ_str  = f"{n_succ}/{n_ep} ({pct:.0f}%)"
@@ -497,16 +528,24 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
         rows = []
         for ep in show_eps:
             outcome = ep["outcome"]
-            is_open = outcome == "inconclusive"
-            if is_open:
-                elapsed  = (date.today() - date.fromisoformat(ep["entry_date"])).days
-                exit_str = "open"
-                dur      = f"{elapsed} days"
-                status   = "[FAIL]" if elapsed > max_hold else "[OPEN]"
-            else:
+            if outcome == "win":
                 exit_str = ep["first_tp_date"] or "?"
                 dur      = f"{ep['tp_dur_td']} days" if ep["tp_dur_td"] is not None else "?"
-                status   = "[FAIL]" if (ep["tp_dur_td"] or 0) > max_hold else "[WIN]"
+                status   = "[WIN]"
+            elif outcome == "fail":
+                eventual_date = ep.get("eventual_tp_date")
+                eventual_dur  = ep.get("eventual_tp_dur_td")
+                if eventual_date:
+                    exit_str = eventual_date
+                    dur      = f"{eventual_dur} days"
+                else:
+                    exit_str = "open"
+                    dur      = f"{ep['td_elapsed']} days"
+                status = "[FAIL]"
+            else:  # open
+                exit_str = "open"
+                dur      = f"{ep['td_elapsed']} days"
+                status   = "[OPEN]"
             low_val = p(ep["min_low"])
             rows.append((ep["entry_date"], exit_str, dur, low_val, status))
 
@@ -581,16 +620,16 @@ def main():
     ap.add_argument(
         "--tp_level",
         type=float,
-        default=0.1,
-        help="Take-profit distance as a fraction of start_price (default: 0.10 = 10%%).",
+        default=10.0,
+        help="Take-profit distance as a percentage of start_price (default: 10 = 10%%).",
     )
     ap.add_argument(
         "--sort_by",
         choices=["succ_pct", "succ_abs", "none"],
-        default="succ_abs",
+        default="succ_pct",
         help=(
-            "Sort output by: 'succ_pct' (success %% descending), "
-            "'succ_abs' (absolute number of successes descending, default), "
+            "Sort output by: 'succ_pct' (success %% descending, default), "
+            "'succ_abs' (absolute number of successes descending), "
             "or 'none' (keep scan order)."
         ),
     )
@@ -615,12 +654,12 @@ def main():
     ap.add_argument(
         "--max_hold",
         type=int,
-        default=50,
+        default=20,
         help=(
             "Maximum holding period in days for a win to count as a success. "
             "Episodes where TP took > max_hold trading days are labelled FAIL; "
-            "open episodes lasting > max_hold calendar days are labelled FAIL "
-            "(default: 50)."
+            "open episodes lasting > max_hold trading days are labelled FAIL "
+            "(default: 20)."
         ),
     )
     ap.add_argument(
@@ -664,7 +703,8 @@ def main():
 
     if args.window < 1:
         ap.error("--window must be a positive integer (years).")
-    args.window = f"{args.window}y"
+    args.window   = f"{args.window}y"
+    args.tp_level = args.tp_level / 100.0
 
     is_auto = (
         args.symbols
@@ -797,7 +837,7 @@ def main():
                 chart_cache[sym] = fetch_chart(sym, args.window)
                 time.sleep(args.sleep)
             chart = chart_cache[sym]
-            res   = analyze_mr(sym, name_map.get(sym, sym), chart, sp, args.tp_level)
+            res   = analyze_mr(sym, name_map.get(sym, sym), chart, sp, args.tp_level, args.max_hold)
 
             # Compute display code (strip mode suffix, mirrors scan_mr_ma20.py)
             if args.mode == "sg":
@@ -826,18 +866,22 @@ def main():
 
     # Sort before printing
     if args.sort_by in ("succ_pct", "succ_abs"):
-        mh = args.max_hold
+        def _avg_win_dur(r):
+            """Average tp_dur_td of WIN episodes; inf if none (sorts last)."""
+            durs = [ep["tp_dur_td"] for ep in r["successes"] if ep.get("tp_dur_td") is not None]
+            return sum(durs) / len(durs) if durs else float("inf")
+
         if args.sort_by == "succ_pct":
             results.sort(
                 key=lambda r: (
-                    sum(1 for ep in r["successes"] if (ep["tp_dur_td"] or 0) <= mh)
-                    / r["n_episodes"] if r["n_episodes"] else 0
+                    len(r["successes"]) / r["n_episodes"] if r["n_episodes"] else 0.0,
+                    -_avg_win_dur(r),
                 ),
                 reverse=True,
             )
         else:  # succ_abs
             results.sort(
-                key=lambda r: sum(1 for ep in r["successes"] if (ep["tp_dur_td"] or 0) <= mh),
+                key=lambda r: (len(r["successes"]), -_avg_win_dur(r)),
                 reverse=True,
             )
 

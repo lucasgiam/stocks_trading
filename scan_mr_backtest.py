@@ -1,29 +1,30 @@
 """
 scan_mr_backtest.py
 
-Mean-reversion backtester using Bollinger Band (20,2) lower-band close touches as episode
-triggers.  For each symbol, pulls daily OHLCV from Yahoo Finance (lookback window
-configurable via --window, default 1 year) and simulates how the stock has historically
-behaved after the close price touches the lower BB(20,2) band.
+Mean-reversion backtester driven by a Z-score threshold.  For each symbol, pulls daily
+OHLCV from Yahoo Finance (lookback window configurable via --window, default 1 year) and
+simulates how the stock has historically behaved after the close Z-score falls to or below
+a threshold (default −2.0, equivalent to touching the BB(20,2) lower band).
 
 Episode model:
   Trigger  : close Z-score (= (close − MA20) / SD20) <= z_thres on day T.
              The first such close in the lookback window starts episode 1.
-             While an episode is active, further BB touches are ignored; the next
+             While an episode is active, further touches are ignored; the next
              episode search resumes only after the current episode resolves.
   Entry    : the FOLLOWING trading day (T+1).  entry_price = open on day T+1.
-  TP       : entry_price * (1 + tp_level).  Checked via intraday high from day T+1
+  TP       : entry_price * (1 + tp_level/100).  Checked via intraday high from day T+1
              onward (including the entry day itself).
   WIN      : intraday high >= tp_price within max_hold trading days.
   FAIL     : max_hold trading days elapsed without intraday high >= tp_price.
   OPEN     : end of data reached before max_hold elapsed and TP not yet hit.
 
 Reset rule (prevents chaining episodes inside a persistent downtrend):
-  After each episode, a new episode may only start once Z >= 0 has been seen
-  at least once since the trigger day.  If Z >= 0 occurred during the episode,
-  the next trigger search resumes normally from i_next.  If not (e.g. the stock
-  stayed deeply oversold throughout), the scan fast-forwards until Z >= 0 before
-  looking for the next trigger.
+  After each episode, a new episode may only start once Z >= z_thres/4 has been
+  seen at least once since the trigger day.  If the reset level was reached during
+  the episode, the next trigger search resumes normally from i_next.  If not (e.g.
+  the stock stayed deeply oversold throughout), the scan fast-forwards until
+  Z >= z_thres/4 before looking for the next trigger.
+  Example: z_thres = -2.0 → reset level = -0.5.
 
 BB(20,2):
   MA20     = simple 20-day moving average of closes.
@@ -31,12 +32,13 @@ BB(20,2):
   Lower BB = MA20 − 2 × SD20.
 
 Usage example:
-  python scan_mr_backtest.py --mode sg --symbols D05 C6L --tp_level 0.08
+  python scan_mr_backtest.py --mode sg --symbols D05 C6L --tp_level 8
   python scan_mr_backtest.py --mode us --symbols AAPL MSFT NVDA --sort_by succ_abs
-  python scan_mr_backtest.py --mode us --symbols NVDA --tp_level 0.15
-  python scan_mr_backtest.py --mode cc --symbols BTC ETH --tp_level 0.2
+  python scan_mr_backtest.py --mode us --symbols NVDA --tp_level 15
+  python scan_mr_backtest.py --mode cc --symbols BTC ETH --tp_level 20
   python scan_mr_backtest.py --mode sg --symbols auto --min_episodes 3 --sort_by succ_abs
   python scan_mr_backtest.py --mode us --symbols AAPL --window 3
+  python scan_mr_backtest.py --mode us --symbols NVDA --z_thres -1.5 --delta_thres -3
 
 Notes:
 - --mode selects:
@@ -46,18 +48,27 @@ Notes:
     'id' for indexes (codes like '^STI', '^DJI'; used as-is for Yahoo, but '^' stripped in
          display; any dot-suffix tickers e.g. ES3.SI are also accepted and suffix is stripped).
 - --symbols takes space-separated codes (no quotes), or 'auto' to load from all_<mode>_stocks.txt.
-- --tp_level sets the take-profit distance as a fraction of entry_price (default: 0.10 = 10%).
+    When explicit symbols are provided (not 'auto'), all output filters are disabled
+    automatically (equivalent to --no_filters) so every symbol is always shown.
+- --tp_level sets the take-profit distance as a percentage of entry_price (default: 10 = 10%).
+- --z_thres sets the Z-score trigger threshold (default: -2.0).
+- --delta_thres optional additional trigger filter: episode only starts when
+    ΔLC% = 100*(trigger_close − MA20)/MA20 <= delta_thres.  Disabled by default.
 - --max_hold caps the maximum holding period in trading days:
     * TP not hit within max_hold trading days → FAIL.
     * End of data reached before max_hold elapsed without TP → OPEN.
-    * default: 50.
-- --sort_by controls sorting of the final summary table:
-    * 'succ_pct':  sort by success rate %% (wins / total episodes), descending.
-    * 'succ_abs':  sort by absolute number of wins, descending (default).
+    * default: 20.
+- --sort_by controls sorting of the final summary table (applies to --symbols auto only):
+    * 'succ_pct':  sort by win rate %% (wins / total episodes), descending (default).
+    * 'succ_abs':  sort by absolute number of wins, descending.
     * 'none':      keep scan order.
 - --min_episodes filters the output to only show symbols with at least N total episodes
-    (default: 2).
-- --success_thres filters to symbols whose win rate >= threshold (default: 0.5 = 50%%).
+    (default: 2; ignored when explicit symbols given).
+- --success_thres filters to symbols whose win rate >= threshold
+    (default: 0.5 = 50%%; ignored when explicit symbols given).
+- --top_N keep only the top N symbols after all filters (default: 10; 0 = show all;
+    ignored when explicit symbols given).
+- --no_filters disables min_episodes, success_thres, and top_N filters (useful with 'auto').
 - --exclude removes the specified symbols from being processed (mode normalisation applied).
 - --sleep sets the delay in seconds between Yahoo Finance requests (default: 0.5).
 - --window sets the historical lookback period in years (positive integer, default: 1).
@@ -357,11 +368,13 @@ def analyze_mr_bb(
     tp_level: float,
     max_hold: int,
     z_thres: float = -2.0,
+    delta_thres: float | None = None,
 ) -> dict:
     """
     Episode-based MR analysis driven by Z-score threshold touches.
 
-    Trigger  : close Z-score (= (close − MA20) / SD20) <= z_thres.
+    Trigger  : close Z-score (= (close − MA20) / SD20) <= z_thres,
+               AND (if delta_thres is set) ΔLC% = 100*(trigger_close−MA20)/MA20 <= delta_thres.
                Default z_thres=-2.0 is equivalent to touching the BB(20,2) lower band.
     Consecutive-touch rule: once an episode is active, no new episode starts until
     the current one resolves (WIN or FAIL).  After resolution the scan resumes from
@@ -389,6 +402,7 @@ def analyze_mr_bb(
             c  is not None and is_finite(c)
             and h  is not None and is_finite(h)
             and lo is not None and is_finite(lo)
+            and o is not None and is_finite(o)
         )
     ]
 
@@ -430,14 +444,20 @@ def analyze_mr_bb(
         lower_bb_entry = lb
         tp_price       = entry_price * (1 + tp_level)
 
-        # Z and MA20 from the trigger day
+        # Z, MA20, and ΔLC% from the trigger day's close
         z_entry      = z_i if is_finite(z_i) else float("nan")
         ma20_trigger = _mean(close_arr[trigger_i - 19 : trigger_i + 1])
-        ep_pct_entry = (
-            100.0 * (entry_price - ma20_trigger) / ma20_trigger
+        lc_pct_entry = (
+            100.0 * (close_arr[trigger_i] - ma20_trigger) / ma20_trigger
             if (is_finite(ma20_trigger) and ma20_trigger != 0)
             else float("nan")
         )
+
+        # Optional ΔLC% filter: trigger day's close vs MA20 (same value in the ΔLC% column)
+        if delta_thres is not None:
+            if not is_finite(lc_pct_entry) or lc_pct_entry > delta_thres:
+                i += 1
+                continue
 
         # Scan max_hold bars starting from entry_i (inclusive) for an intraday TP hit
         search_end = min(entry_i + max_hold, m)
@@ -500,7 +520,7 @@ def analyze_mr_bb(
             "entry_price":        entry_price,
             "lower_bb":           lower_bb_entry,
             "z":                  z_entry,
-            "ep_pct":             ep_pct_entry,
+            "lc_pct":             lc_pct_entry,
             "tp_price":           tp_price,
             "outcome":            outcome,
             "first_tp_date":      ts_to_date(valid_days[first_tp_k][1]) if first_tp_k is not None else None,
@@ -508,29 +528,31 @@ def analyze_mr_bb(
             "fail_date":          fail_date,
             "eventual_tp_date":   eventual_tp_date,
             "eventual_tp_dur_td": eventual_tp_dur,
+            "td_elapsed":         m - entry_i,   # trading bars from entry to end of data
             "min_low":            min_low,
             "min_low_date":       ts_to_date(min_low_ts) if min_low_ts else None,
         })
 
         # ── Reset condition ───────────────────────────────────────────────────
-        # A new episode is only allowed after Z >= 0 has been observed at least
-        # once since the trigger.  This prevents chaining episodes inside a
-        # persistent downtrend.  Check whether the reset was already seen
-        # within the episode window (trigger_i .. i_next-1).
+        # A new episode is only allowed after Z >= z_thres/4 has been observed
+        # at least once since the trigger.  This prevents chaining episodes
+        # inside a persistent downtrend.  Check whether the reset was already
+        # seen within the episode window (trigger_i .. i_next-1).
+        reset_level = z_thres / 4.0
         reset_met = any(
-            z_arr[k] is not None and is_finite(z_arr[k]) and z_arr[k] >= 0
+            z_arr[k] is not None and is_finite(z_arr[k]) and z_arr[k] >= reset_level
             for k in range(trigger_i, i_next)
         )
 
         if reset_met:
             i = i_next
         else:
-            # Fast-forward until the first bar where Z >= 0 (reset achieved),
-            # then start looking for the next trigger from that point.
+            # Fast-forward until the first bar where Z >= reset_level, then
+            # start looking for the next trigger from that point.
             i = i_next
             while i < m:
                 z_j = z_arr[i]
-                if z_j is not None and is_finite(z_j) and z_j >= 0:
+                if z_j is not None and is_finite(z_j) and z_j >= reset_level:
                     break
                 i += 1
 
@@ -570,7 +592,7 @@ def _print_summary(
     min_episodes: int,
     success_thres: float,
     top_n: int,
-    max_hold: int = 50,
+    max_hold: int = 20,
 ):
     total_processed = len(results)
 
@@ -640,53 +662,52 @@ def _print_summary(
                     exit_str = eventual_date
                     dur      = f"{eventual_dur} days"
                 else:
-                    # TP still not hit as of today — show like an open position
-                    elapsed  = (date.today() - date.fromisoformat(ep["entry_date"])).days
+                    # TP still not hit — show trading days elapsed to end of data
+                    elapsed  = ep["td_elapsed"]
                     exit_str = "open"
                     dur      = f"{elapsed} days"
                 status = "[FAIL]"
             else:  # open
-                elapsed  = (date.today() - date.fromisoformat(ep["entry_date"])).days
+                elapsed  = ep["td_elapsed"]
                 exit_str = "open"
                 dur      = f"{elapsed} days"
-                # ~7 calendar days per 5 trading days; if max_hold elapsed → FAIL
-                status   = "[FAIL]" if elapsed >= max_hold * 7 // 5 else "[OPEN]"
+                status   = "[FAIL]" if elapsed >= max_hold else "[OPEN]"
 
             rows.append((
                 ep["entry_date"],
                 exit_str,
                 dur,
-                p(ep["entry_price"]),
+                _fmt_pct(ep["lc_pct"]),
                 _fmt_z(ep["z"]),
-                _fmt_pct(ep["ep_pct"]),
+                p(ep["entry_price"]),
                 p(ep["tp_price"]),
                 p(ep["min_low"]),
                 status,
             ))
 
         dur_w  = max(max(len(r[2]) for r in rows), len("Duration"))
-        ep_w   = max(max(len(r[3]) for r in rows), len("EP"))
+        pct_w  = max(max(len(r[3]) for r in rows), len("ΔLC%"))
         z_w    = max(max(len(r[4]) for r in rows), len("Z"))
-        pct_w  = max(max(len(r[5]) for r in rows), len("ΔEP%"))
+        ep_w   = max(max(len(r[5]) for r in rows), len("EP"))
         tp_w   = max(max(len(r[6]) for r in rows), len("TP"))
         low_w  = max(max(len(r[7]) for r in rows), len("Low"))
         stat_w = max(max(len(r[8]) for r in rows), len("Status"))
 
         hdr = (
             f"  {'#':>3}  {'Entry':10}  {'→ Exit':12}  {'Duration':>{dur_w}}  "
-            f"{'EP':>{ep_w}}  {'Z':>{z_w}}  {'ΔEP%':>{pct_w}}  {'TP':>{tp_w}}  {'Low':>{low_w}}  Status"
+            f"{'ΔLC%':>{pct_w}}  {'Z':>{z_w}}  {'EP':>{ep_w}}  {'TP':>{tp_w}}  {'Low':>{low_w}}  Status"
         )
         rule = (
             f"  {'─'*3}  {'─'*10}  {'─'*12}  {'─'*dur_w}  "
-            f"{'─'*ep_w}  {'─'*z_w}  {'─'*pct_w}  {'─'*tp_w}  {'─'*low_w}  {'─'*stat_w}"
+            f"{'─'*pct_w}  {'─'*z_w}  {'─'*ep_w}  {'─'*tp_w}  {'─'*low_w}  {'─'*stat_w}"
         )
         print(hdr)
         print(rule)
 
-        for k, (entry_date, exit_str, dur, ep_val, z_val, pct_val, tp_val, low_val, status) in enumerate(rows, 1):
+        for k, (entry_date, exit_str, dur, pct_val, z_val, ep_val, tp_val, low_val, status) in enumerate(rows, 1):
             print(
                 f"  {k:>3}  {entry_date:10}  → {exit_str:<10}  {dur:>{dur_w}}  "
-                f"{ep_val:>{ep_w}}  {z_val:>{z_w}}  {pct_val:>{pct_w}}  {tp_val:>{tp_w}}  {low_val:>{low_w}}  {status}"
+                f"{pct_val:>{pct_w}}  {z_val:>{z_w}}  {ep_val:>{ep_w}}  {tp_val:>{tp_w}}  {low_val:>{low_w}}  {status}"
             )
 
         print()
@@ -724,8 +745,8 @@ def main():
     ap.add_argument(
         "--tp_level",
         type=float,
-        default=0.1,
-        help="Take-profit as a fraction of entry_price (default: 0.10 = 10%%).",
+        default=10.0,
+        help="Take-profit as a percentage of entry_price (default: 10 = 10%%).",
     )
     ap.add_argument(
         "--z_thres",
@@ -735,6 +756,17 @@ def main():
             "Z-score threshold for episode trigger: episode starts when the close "
             "Z-score (= (close − MA20) / SD20) <= this value "
             "(default: -2.0, equivalent to touching the BB(20,2) lower band)."
+        ),
+    )
+    ap.add_argument(
+        "--delta_thres",
+        type=float,
+        default=None,
+        help=(
+            "ΔLC%% filter for episode trigger: episode only starts when "
+            "100*(trigger_close − MA20)/MA20 <= this value in addition to the Z-score condition. "
+            "Disabled by default (no filter). Negative values select deeper oversold entries "
+            "(e.g. --delta_thres -5 requires trigger close to be at least 5%% below MA20)."
         ),
     )
     ap.add_argument(
@@ -761,11 +793,11 @@ def main():
     ap.add_argument(
         "--max_hold",
         type=int,
-        default=50,
+        default=20,
         help=(
             "Maximum holding period in trading days. "
             "TP not hit within max_hold days → FAIL; "
-            "end of data reached within max_hold → OPEN (default: 50)."
+            "end of data reached within max_hold → OPEN (default: 20)."
         ),
     )
     ap.add_argument(
@@ -806,7 +838,8 @@ def main():
 
     if args.window < 1:
         ap.error("--window must be a positive integer (years).")
-    args.window = f"{args.window}y"
+    args.window   = f"{args.window}y"
+    args.tp_level = args.tp_level / 100.0
 
     is_auto = (
         args.symbols
@@ -882,7 +915,7 @@ def main():
     for sym in tqdm(symbols_list, desc="Scanning", unit="symbol"):
         try:
             chart = fetch_chart(sym, args.window)
-            res   = analyze_mr_bb(sym, name_map.get(sym, sym), chart, args.tp_level, args.max_hold, args.z_thres)
+            res   = analyze_mr_bb(sym, name_map.get(sym, sym), chart, args.tp_level, args.max_hold, args.z_thres, args.delta_thres)
 
             if args.mode == "sg":
                 disp_code = sym.removesuffix(".SI")
@@ -906,13 +939,24 @@ def main():
             time.sleep(args.sleep)
 
     if args.sort_by in ("succ_pct", "succ_abs"):
+        def _avg_win_dur(r):
+            """Average tp_dur_td of WIN episodes; inf if no wins (sorts last)."""
+            durs = [ep["tp_dur_td"] for ep in r["successes"] if ep.get("tp_dur_td") is not None]
+            return sum(durs) / len(durs) if durs else float("inf")
+
         if args.sort_by == "succ_pct":
             results.sort(
-                key=lambda r: len(r["successes"]) / r["n_episodes"] if r["n_episodes"] else 0.0,
+                key=lambda r: (
+                    len(r["successes"]) / r["n_episodes"] if r["n_episodes"] else 0.0,
+                    -_avg_win_dur(r),
+                ),
                 reverse=True,
             )
         else:  # succ_abs
-            results.sort(key=lambda r: len(r["successes"]), reverse=True)
+            results.sort(
+                key=lambda r: (len(r["successes"]), -_avg_win_dur(r)),
+                reverse=True,
+            )
 
     _print_summary(results, args.min_episodes, args.success_thres, args.top_N, args.max_hold)
 

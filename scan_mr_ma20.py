@@ -1,5 +1,5 @@
 """
-scan_stocks_ma20.py
+scan_mr_ma20.py
 
 Scan SGX, US, crypto, or index tickers on Yahoo and compute:
 - LC (latest close)
@@ -12,10 +12,10 @@ Scan SGX, US, crypto, or index tickers on Yahoo and compute:
 - ATR%   = ATR14 / LC * 100
 
 Usage example:
-  python scan_stocks.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --z_thres 0 --sort_by delta
-  python scan_stocks.py --mode us --symbols AAPL GOOG MSFT NVDA --delta_thres 0 --z_thres 0 --sort_by z
-  python scan_stocks.py --mode cc --symbols BTC ETH SOL --delta_thres 0 --z_thres 0 --sort_by z
-  python scan_stocks.py --mode id --symbols ^STI ^DJI ^NPX ^SPX --sort_by none
+  python scan_mr_ma20.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --z_thres 0 --sort_by delta
+  python scan_mr_ma20.py --mode us --symbols AAPL GOOG MSFT NVDA --delta_thres 0 --z_thres 0 --sort_by z
+  python scan_mr_ma20.py --mode cc --symbols BTC ETH SOL --delta_thres 0 --z_thres 0 --sort_by z
+  python scan_mr_ma20.py --mode id --symbols ^STI ^DJI ^NPX ^SPX --sort_by none
 
 Notes:
 - --mode selects:
