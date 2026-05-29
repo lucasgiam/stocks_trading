@@ -506,11 +506,12 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
         pct       = n_succ / n_ep * 100 if n_ep else 0
         hist_str  = _date_range_str(res["data_start"], res["data_end"])
         succ_str  = f"{n_succ}/{n_ep} ({pct:.0f}%)"
+        lc_val    = p(res["latest_close"])
 
         print(sep)
         print(f"  {code}  ·  {name}")
         print(sep)
-        print(f"  History: {hist_str} | Successes: {succ_str}")
+        print(f"  History: {hist_str} | LC: {lc_val} | Successes: {succ_str}")
         print()
 
         # All episodes, most recent first
@@ -523,7 +524,6 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
 
         # Pre-compute all row values to determine column widths
         sp_val = p(sp)
-        lc_val = p(res["latest_close"])
         tp_val = p(res["tp_price"])
         rows = []
         for ep in show_eps:
@@ -550,19 +550,18 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
             rows.append((ep["entry_date"], exit_str, dur, low_val, status))
 
         dur_w  = max(max(len(r[2]) for r in rows), len("Duration"))
-        sp_w   = max(len(sp_val), len("SP"))
-        lc_w   = max(len(lc_val), len("LC"))
+        ep_w   = max(len(sp_val), len("EP"))
         tp_w   = max(len(tp_val), len("TP"))
         low_w  = max(max(len(r[3]) for r in rows), len("Low"))
         stat_w = max(max(len(r[4]) for r in rows), len("Status"))
 
         hdr = (
             f"  {'#':>3}  {'Entry':10}  {'→ Exit':12}  {'Duration':>{dur_w}}  "
-            f"{'SP':>{sp_w}}  {'LC':>{lc_w}}  {'TP':>{tp_w}}  {'Low':>{low_w}}  Status"
+            f"{'EP':>{ep_w}}  {'TP':>{tp_w}}  {'Low':>{low_w}}  Status"
         )
         rule = (
             f"  {'─'*3}  {'─'*10}  {'─'*12}  {'─'*dur_w}  "
-            f"{'─'*sp_w}  {'─'*lc_w}  {'─'*tp_w}  {'─'*low_w}  {'─'*stat_w}"
+            f"{'─'*ep_w}  {'─'*tp_w}  {'─'*low_w}  {'─'*stat_w}"
         )
         print(hdr)
         print(rule)
@@ -570,7 +569,7 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
         for k, (entry_date, exit_str, dur, low_val, status) in enumerate(rows, 1):
             print(
                 f"  {k:>3}  {entry_date:10}  → {exit_str:<10}  {dur:>{dur_w}}  "
-                f"{sp_val:>{sp_w}}  {lc_val:>{lc_w}}  {tp_val:>{tp_w}}  {low_val:>{low_w}}  {status}"
+                f"{sp_val:>{ep_w}}  {tp_val:>{tp_w}}  {low_val:>{low_w}}  {status}"
             )
 
         print()
@@ -857,7 +856,7 @@ def main():
             if sym_counts[sym] > 1:
                 raw_sp = res["start_price"]
                 sp_str = f"{raw_sp:.0f}" if raw_sp == int(raw_sp) else f"{raw_sp:g}"
-                disp_code = f"{disp_code}@{sp_str}"
+                disp_code = f"{disp_code} @ {sp_str}"
             res["disp_code"] = disp_code
 
             results.append(res)
