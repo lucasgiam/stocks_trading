@@ -60,13 +60,15 @@ Notes:
     * default: 20.
 - --sort_by controls sorting of the final summary table (applies to --symbols auto only):
     * 'succ_pct':  sort by win rate %% (wins / total episodes), descending (default).
+                   Tiebreak: succ_abs (win count), then average win-episode holding duration (shorter first).
     * 'succ_abs':  sort by absolute number of wins, descending.
+                   Tiebreak: succ_pct (win rate), then average win-episode holding duration (shorter first).
     * 'none':      keep scan order.
 - --min_episodes filters the output to only show symbols with at least N total episodes
     (default: 2; ignored when explicit symbols given).
 - --success_thres filters to symbols whose closed-episode win rate
-    (wins / (wins + fails); OPEN episodes excluded as inconclusive) >= threshold
-    (default: 0.5 = 50%%; ignored when explicit symbols given).
+    (wins / (wins + fails); OPEN episodes excluded as inconclusive) >= threshold.
+    Expressed as an absolute percentage (e.g. 50 = 50%%; default: 50; ignored when explicit symbols given).
 - --top_N keep only the top N symbols after all filters (default: 10; 0 = show all;
     ignored when explicit symbols given).
 - --no_filters disables min_episodes, success_thres, and top_N filters (useful with 'auto').
@@ -88,7 +90,7 @@ import time
 import urllib.request
 import zlib
 from collections import Counter
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 from tqdm import tqdm
 
@@ -561,6 +563,19 @@ def analyze_mr_bb(
     last_ep   = episodes[-1] if episodes else None
     pending   = last_ep if (last_ep and last_ep["outcome"] == "open") else None
 
+    # Today's Z and ΔLC% for the summary header (matches scan_mr_ma20.py output)
+    today_z = (
+        z_arr[-1]
+        if z_arr and z_arr[-1] is not None and is_finite(z_arr[-1])
+        else float("nan")
+    )
+    today_ma20 = _mean(close_arr[-20:]) if len(close_arr) >= 20 else float("nan")
+    today_lc_pct = (
+        100.0 * (close_arr[-1] - today_ma20) / today_ma20
+        if is_finite(today_ma20) and today_ma20 != 0
+        else float("nan")
+    )
+
     return {
         "symbol":       symbol,
         "name":         name,
@@ -568,6 +583,8 @@ def analyze_mr_bb(
         "data_start":   ts_to_date(valid_days[0][1]),
         "data_end":     ts_to_date(valid_days[-1][1]),
         "latest_close": valid_days[-1][2],
+        "today_z":      today_z,
+        "today_lc_pct": today_lc_pct,
         "episodes":     episodes,
         "successes":    successes,
         "pending":      pending,
@@ -575,18 +592,6 @@ def analyze_mr_bb(
 
 
 # ─── Terminal output ──────────────────────────────────────────────────────────
-
-def _date_range_str(start_str: str, end_str: str) -> str:
-    start  = date.fromisoformat(start_str)
-    end    = date.fromisoformat(end_str)
-    months = (end.year - start.year) * 12 + (end.month - start.month)
-    years, rem_m = divmod(months, 12)
-    y = f"{years} year{'s' if years != 1 else ''}"
-    m = f"{rem_m} month{'s' if rem_m != 1 else ''}"
-    if years > 0 and rem_m > 0:
-        return f"{y} {m}"
-    return y if years > 0 else m
-
 
 def _print_summary(
     results: list[dict],
@@ -629,18 +634,19 @@ def _print_summary(
         def p(x, _dp=dp) -> str:
             return f"{x:.{_dp}f}" if is_finite(x) else "N/A"
 
-        code     = res.get("disp_code", res["symbol"])
-        n_succ   = len(res["successes"])
-        n_fail   = sum(1 for ep in res["episodes"] if ep["outcome"] == "fail")
-        n_closed = n_succ + n_fail
-        pct      = n_succ / n_closed * 100 if n_closed else 0
-        hist_str = _date_range_str(res["data_start"], res["data_end"])
-        succ_str = f"{n_succ}/{n_closed} ({pct:.0f}%)"
+        code            = res.get("disp_code", res["symbol"])
+        n_succ          = len(res["successes"])
+        n_fail          = sum(1 for ep in res["episodes"] if ep["outcome"] == "fail")
+        n_closed        = n_succ + n_fail
+        pct             = n_succ / n_closed * 100 if n_closed else 0
+        succ_str        = f"{n_succ}/{n_closed} ({pct:.0f}%)"
+        z_today_str     = _fmt_z(res.get("today_z", float("nan")))
+        delta_today_str = _fmt_pct(res.get("today_lc_pct", float("nan")))
 
         print(sep)
         print(f"  {code}  ·  {res['name']}")
         print(sep)
-        print(f"  History: {hist_str} | LC: {p(lc)} | Successes: {succ_str}")
+        print(f"  LC: {p(lc)} | ΔLC%: {delta_today_str} | Z: {z_today_str} | Successes: {succ_str}")
         print()
 
         # Most recent episode first
@@ -778,15 +784,18 @@ def main():
         choices=["succ_pct", "succ_abs", "none"],
         default="succ_pct",
         help=(
-            "Sort output: 'succ_pct' (win %% descending, default), "
-            "'succ_abs' (win count descending), or 'none'."
+            "Sort output: 'succ_pct' (win %% descending; tiebreak: succ_abs then avg win duration, default), "
+            "'succ_abs' (win count descending; tiebreak: succ_pct then avg win duration), or 'none'."
         ),
     )
     ap.add_argument(
         "--success_thres",
         type=float,
         default=None,
-        help="Minimum win rate (wins / total episodes) to include a symbol (default: 0.5).",
+        help=(
+            "Minimum closed-episode win rate (wins / (wins + fails); OPEN excluded) to include a "
+            "symbol, expressed as an absolute percentage (e.g. 50 = 50%%; default: 50)."
+        ),
     )
     ap.add_argument(
         "--min_episodes",
@@ -858,8 +867,9 @@ def main():
         if args.top_N         is None: args.top_N         = 0
     # Apply true defaults for auto mode (or when filters were explicitly passed).
     if args.min_episodes  is None: args.min_episodes  = 2
-    if args.success_thres is None: args.success_thres = 0.5
+    if args.success_thres is None: args.success_thres = 50.0
     if args.top_N         is None: args.top_N         = 10
+    args.success_thres /= 100.0  # convert absolute percent input to fraction
 
     if not args.symbols:
         print("ERROR: No symbols provided. Please supply at least one via --symbols.", file=sys.stderr)
@@ -956,13 +966,18 @@ def main():
             results.sort(
                 key=lambda r: (
                     len(r["successes"]) / r["n_episodes"] if r["n_episodes"] else 0.0,
+                    len(r["successes"]),
                     -_avg_win_dur(r),
                 ),
                 reverse=True,
             )
         else:  # succ_abs
             results.sort(
-                key=lambda r: (len(r["successes"]), -_avg_win_dur(r)),
+                key=lambda r: (
+                    len(r["successes"]),
+                    len(r["successes"]) / r["n_episodes"] if r["n_episodes"] else 0.0,
+                    -_avg_win_dur(r),
+                ),
                 reverse=True,
             )
 

@@ -46,13 +46,15 @@ Notes:
     * default: 10 (10%%).
 - --sort_by controls sorting of the final summary table (applies to --symbols auto only):
     * 'succ_pct':  sort by MR success rate %% (successes / total episodes), descending (default).
+                   Tiebreak: succ_abs (win count), then average win-episode holding duration (shorter first).
     * 'succ_abs':  sort by absolute number of successes, descending.
+                   Tiebreak: succ_pct (win rate), then average win-episode holding duration (shorter first).
     * 'none':      keep scan order as processed.
 - --min_episodes filters the output to only show symbols with at least N total episodes
     (default: 2; ignored when explicit symbols given).
 - --success_thres filters the output to only show symbols whose closed-episode win rate
-    (wins / (wins + fails); OPEN episodes excluded as inconclusive) meets the threshold
-    (default: 0.5 = 50%%; ignored when explicit symbols given).
+    (wins / (wins + fails); OPEN episodes excluded as inconclusive) meets the threshold.
+    Expressed as an absolute percentage (e.g. 50 = 50%%; default: 50; ignored when explicit symbols given).
 - --top_N keep only the top N symbols after all filters (default: 10; 0 = show all;
     ignored when explicit symbols given).
 - --no_filters disables min_episodes, success_thres, and top_N filters (useful with 'auto').
@@ -78,7 +80,7 @@ import time
 import urllib.request
 import zlib
 from collections import Counter
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 
 from tqdm import tqdm
 
@@ -288,6 +290,28 @@ def _auto_dp(price) -> int:
     return 5
 
 
+def _mean(vals: list[float]) -> float:
+    return sum(vals) / len(vals) if vals else float("nan")
+
+
+def _std_sample(vals: list[float]) -> float:
+    n = len(vals)
+    if n < 2:
+        return float("nan")
+    m = _mean(vals)
+    return math.sqrt(sum((x - m) ** 2 for x in vals) / (n - 1))
+
+
+def _fmt_z(z) -> str:
+    """Format Z-score to 2 dp (matches scan_mr_ma20.py display)."""
+    return f"{z:.2f}" if is_finite(z) else "N/A"
+
+
+def _fmt_pct(pct) -> str:
+    """Format a percentage value to 2 dp with % suffix."""
+    return f"{pct:.2f}%" if is_finite(pct) else "N/A"
+
+
 # ─── Core analysis ────────────────────────────────────────────────────────────
 
 def analyze_mr(
@@ -339,8 +363,9 @@ def analyze_mr(
         else valid_days[-1][2]
     )
 
-    tp_price = sp * (1 + tp_level)
-    m = len(valid_days)
+    tp_price  = sp * (1 + tp_level)
+    m         = len(valid_days)
+    close_arr = [vd[2] for vd in valid_days]
 
     episodes = []
     i = 0  # scan the full lookback window for OHLC touches of sp
@@ -412,9 +437,30 @@ def analyze_mr(
             None,
         ) if scan_lows else None
 
+        # Z and ΔLC% at episode trigger day (entry_i), based on MA20/SD20 of that day
+        if entry_i >= 19:
+            window20  = close_arr[entry_i - 19: entry_i + 1]
+            ma20_ep   = _mean(window20)
+            sd20_ep   = _std_sample(window20)
+            z_ep      = (
+                (close_arr[entry_i] - ma20_ep) / sd20_ep
+                if is_finite(ma20_ep) and is_finite(sd20_ep) and sd20_ep != 0
+                else float("nan")
+            )
+            lc_pct_ep = (
+                100.0 * (close_arr[entry_i] - ma20_ep) / ma20_ep
+                if is_finite(ma20_ep) and ma20_ep != 0
+                else float("nan")
+            )
+        else:
+            z_ep      = float("nan")
+            lc_pct_ep = float("nan")
+
         episodes.append({
             "entry_date":         ts_to_date(entry_ts),
             "entry_close":        entry_c,
+            "z":                  z_ep,
+            "lc_pct":             lc_pct_ep,
             "outcome":            outcome,
             "first_tp_date":      ts_to_date(valid_days[first_tp_k][1]) if first_tp_k is not None else None,
             "tp_dur_td":          tp_dur,
@@ -435,6 +481,17 @@ def analyze_mr(
     last_ep = episodes[-1] if episodes else None
     pending = last_ep if (last_ep and last_ep["outcome"] == "open") else None
 
+    # Today's Z and ΔLC% for the summary header (matches scan_mr_ma20.py output)
+    today_z = float("nan")
+    today_lc_pct = float("nan")
+    if len(close_arr) >= 20:
+        ma20_today = _mean(close_arr[-20:])
+        sd20_today = _std_sample(close_arr[-20:])
+        if is_finite(ma20_today) and is_finite(sd20_today) and sd20_today != 0:
+            today_z = (close_arr[-1] - ma20_today) / sd20_today
+        if is_finite(ma20_today) and ma20_today != 0:
+            today_lc_pct = 100.0 * (close_arr[-1] - ma20_today) / ma20_today
+
     return {
         "symbol":       symbol,
         "name":         name,
@@ -444,6 +501,8 @@ def analyze_mr(
         "data_start":   ts_to_date(valid_days[0][1]),
         "data_end":     ts_to_date(valid_days[-1][1]),
         "latest_close": valid_days[-1][2],
+        "today_z":      today_z,
+        "today_lc_pct": today_lc_pct,
         "episodes":     episodes,
         "successes":    successes,
         "pending":      pending,
@@ -451,19 +510,6 @@ def analyze_mr(
 
 
 # ─── Terminal output ──────────────────────────────────────────────────────────
-
-def _date_range_str(start_str: str, end_str: str) -> str:
-    """Return 'X years Y months' duration between two YYYY-MM-DD strings."""
-    start  = date.fromisoformat(start_str)
-    end    = date.fromisoformat(end_str)
-    months = (end.year - start.year) * 12 + (end.month - start.month)
-    years, rem_m = divmod(months, 12)
-    y = f"{years} year{'s' if years != 1 else ''}"
-    m = f"{rem_m} month{'s' if rem_m != 1 else ''}"
-    if years > 0 and rem_m > 0:
-        return f"{y} {m}"
-    return y if years > 0 else m
-
 
 def _print_summary(results: list[dict], min_episodes: int, max_hold: int, success_thres: float, top_n: int):
     total_processed = len(results)
@@ -503,18 +549,19 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
         code      = res.get("disp_code", res["symbol"])
         name      = res["name"]
 
-        n_succ    = len(res["successes"])
-        n_fail    = sum(1 for ep in res["episodes"] if ep["outcome"] == "fail")
-        n_closed  = n_succ + n_fail
-        pct       = n_succ / n_closed * 100 if n_closed else 0
-        hist_str  = _date_range_str(res["data_start"], res["data_end"])
-        succ_str  = f"{n_succ}/{n_closed} ({pct:.0f}%)"
-        lc_val    = p(res["latest_close"])
+        n_succ          = len(res["successes"])
+        n_fail          = sum(1 for ep in res["episodes"] if ep["outcome"] == "fail")
+        n_closed        = n_succ + n_fail
+        pct             = n_succ / n_closed * 100 if n_closed else 0
+        succ_str        = f"{n_succ}/{n_closed} ({pct:.0f}%)"
+        lc_val          = p(res["latest_close"])
+        z_today_str     = _fmt_z(res.get("today_z", float("nan")))
+        delta_today_str = _fmt_pct(res.get("today_lc_pct", float("nan")))
 
         print(sep)
         print(f"  {code}  ·  {name}")
         print(sep)
-        print(f"  History: {hist_str} | LC: {lc_val} | Successes: {succ_str}")
+        print(f"  LC: {lc_val} | ΔLC%: {delta_today_str} | Z: {z_today_str} | Successes: {succ_str}")
         print()
 
         # All episodes, most recent first
@@ -550,29 +597,31 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
                 dur      = f"{ep['td_elapsed']} days"
                 status   = "[OPEN]"
             low_val = p(ep["min_low"])
-            rows.append((ep["entry_date"], exit_str, dur, low_val, status))
+            rows.append((ep["entry_date"], exit_str, dur, _fmt_pct(ep["lc_pct"]), _fmt_z(ep["z"]), sp_val, tp_val, low_val, status))
 
         dur_w  = max(max(len(r[2]) for r in rows), len("Duration"))
-        ep_w   = max(len(sp_val), len("EP"))
-        tp_w   = max(len(tp_val), len("TP"))
-        low_w  = max(max(len(r[3]) for r in rows), len("Low"))
-        stat_w = max(max(len(r[4]) for r in rows), len("Status"))
+        pct_w  = max(max(len(r[3]) for r in rows), len("ΔLC%"))
+        z_w    = max(max(len(r[4]) for r in rows), len("Z"))
+        ep_w   = max(max(len(r[5]) for r in rows), len("EP"))
+        tp_w   = max(max(len(r[6]) for r in rows), len("TP"))
+        low_w  = max(max(len(r[7]) for r in rows), len("Low"))
+        stat_w = max(max(len(r[8]) for r in rows), len("Status"))
 
         hdr = (
             f"  {'#':>3}  {'Entry':10}  {'→ Exit':12}  {'Duration':>{dur_w}}  "
-            f"{'EP':>{ep_w}}  {'TP':>{tp_w}}  {'Low':>{low_w}}  Status"
+            f"{'ΔLC%':>{pct_w}}  {'Z':>{z_w}}  {'EP':>{ep_w}}  {'TP':>{tp_w}}  {'Low':>{low_w}}  Status"
         )
         rule = (
             f"  {'─'*3}  {'─'*10}  {'─'*12}  {'─'*dur_w}  "
-            f"{'─'*ep_w}  {'─'*tp_w}  {'─'*low_w}  {'─'*stat_w}"
+            f"{'─'*pct_w}  {'─'*z_w}  {'─'*ep_w}  {'─'*tp_w}  {'─'*low_w}  {'─'*stat_w}"
         )
         print(hdr)
         print(rule)
 
-        for k, (entry_date, exit_str, dur, low_val, status) in enumerate(rows, 1):
+        for k, (entry_date, exit_str, dur, pct_val, z_val, ep_val, tp_val, low_val, status) in enumerate(rows, 1):
             print(
                 f"  {k:>3}  {entry_date:10}  → {exit_str:<10}  {dur:>{dur_w}}  "
-                f"{sp_val:>{ep_w}}  {tp_val:>{tp_w}}  {low_val:>{low_w}}  {status}"
+                f"{pct_val:>{pct_w}}  {z_val:>{z_w}}  {ep_val:>{ep_w}}  {tp_val:>{tp_w}}  {low_val:>{low_w}}  {status}"
             )
 
         print()
@@ -630,8 +679,8 @@ def main():
         choices=["succ_pct", "succ_abs", "none"],
         default="succ_pct",
         help=(
-            "Sort output by: 'succ_pct' (success %% descending, default), "
-            "'succ_abs' (absolute number of successes descending), "
+            "Sort output by: 'succ_pct' (success %% descending; tiebreak: succ_abs then avg win duration, default), "
+            "'succ_abs' (absolute wins descending; tiebreak: succ_pct then avg win duration), "
             "or 'none' (keep scan order)."
         ),
     )
@@ -640,8 +689,8 @@ def main():
         type=float,
         default=None,
         help=(
-            "Minimum effective success rate (wins within max_hold / total episodes) "
-            "to include a symbol (default: 0.5 = 50%%)."
+            "Minimum closed-episode win rate (wins / (wins + fails); OPEN excluded) to include a "
+            "symbol, expressed as an absolute percentage (e.g. 50 = 50%%; default: 50)."
         ),
     )
     ap.add_argument(
@@ -723,8 +772,9 @@ def main():
         if args.top_N         is None: args.top_N         = 0
     # Apply true defaults for auto mode (or when filters were explicitly passed).
     if args.min_episodes  is None: args.min_episodes  = 2
-    if args.success_thres is None: args.success_thres = 0.5
+    if args.success_thres is None: args.success_thres = 50.0
     if args.top_N         is None: args.top_N         = 10
+    args.success_thres /= 100.0  # convert absolute percent input to fraction
 
     # Symbols must be provided for all modes (unless using 'auto' later).
     if not args.symbols:
@@ -881,13 +931,18 @@ def main():
             results.sort(
                 key=lambda r: (
                     len(r["successes"]) / r["n_episodes"] if r["n_episodes"] else 0.0,
+                    len(r["successes"]),
                     -_avg_win_dur(r),
                 ),
                 reverse=True,
             )
         else:  # succ_abs
             results.sort(
-                key=lambda r: (len(r["successes"]), -_avg_win_dur(r)),
+                key=lambda r: (
+                    len(r["successes"]),
+                    len(r["successes"]) / r["n_episodes"] if r["n_episodes"] else 0.0,
+                    -_avg_win_dur(r),
+                ),
                 reverse=True,
             )
 
