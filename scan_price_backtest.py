@@ -638,7 +638,7 @@ def main():
     ap.add_argument(
         "--success_thres",
         type=float,
-        default=0.5,
+        default=None,
         help=(
             "Minimum effective success rate (wins within max_hold / total episodes) "
             "to include a symbol (default: 0.5 = 50%%)."
@@ -647,7 +647,7 @@ def main():
     ap.add_argument(
         "--min_episodes",
         type=int,
-        default=2,
+        default=None,
         help=(
             "Minimum total number of episodes (successes + any open episode) required "
             "to include a symbol in the output (default: 2)."
@@ -687,7 +687,7 @@ def main():
     ap.add_argument(
         "--top_N",
         type=int,
-        default=10,
+        default=None,
         help=(
             "After all other filters, keep only the top N symbols (default: 10). "
             "Set to 0 to disable."
@@ -714,13 +714,17 @@ def main():
         and args.symbols[0].lower() == "auto"
     )
 
-    # When symbols are explicitly provided, disable all filters automatically.
+    # When symbols are explicitly provided, disable filters that weren't explicitly set.
     # max_hold is intentionally NOT overridden here — it controls WIN/FAIL labels
     # and the successes count, which should always reflect the user's threshold.
     if not is_auto or args.no_filters:
-        args.min_episodes  = 0
-        args.success_thres = 0.0
-        args.top_N         = 0
+        if args.min_episodes  is None: args.min_episodes  = 0
+        if args.success_thres is None: args.success_thres = 0.0
+        if args.top_N         is None: args.top_N         = 0
+    # Apply true defaults for auto mode (or when filters were explicitly passed).
+    if args.min_episodes  is None: args.min_episodes  = 2
+    if args.success_thres is None: args.success_thres = 0.5
+    if args.top_N         is None: args.top_N         = 10
 
     # Symbols must be provided for all modes (unless using 'auto' later).
     if not args.symbols:

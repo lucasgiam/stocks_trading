@@ -785,13 +785,13 @@ def main():
     ap.add_argument(
         "--success_thres",
         type=float,
-        default=0.5,
+        default=None,
         help="Minimum win rate (wins / total episodes) to include a symbol (default: 0.5).",
     )
     ap.add_argument(
         "--min_episodes",
         type=int,
-        default=2,
+        default=None,
         help="Minimum total episodes to include a symbol (default: 2).",
     )
     ap.add_argument(
@@ -827,7 +827,7 @@ def main():
     ap.add_argument(
         "--top_N",
         type=int,
-        default=10,
+        default=None,
         help="Keep only the top N symbols after all filters (default: 10; 0 = show all).",
     )
     ap.add_argument(
@@ -851,11 +851,15 @@ def main():
         and args.symbols[0].lower() == "auto"
     )
 
-    # When symbols are explicitly provided, disable all filters automatically.
+    # When symbols are explicitly provided, disable filters that weren't explicitly set.
     if not is_auto or args.no_filters:
-        args.min_episodes  = 0
-        args.success_thres = 0.0
-        args.top_N         = 0
+        if args.min_episodes  is None: args.min_episodes  = 0
+        if args.success_thres is None: args.success_thres = 0.0
+        if args.top_N         is None: args.top_N         = 0
+    # Apply true defaults for auto mode (or when filters were explicitly passed).
+    if args.min_episodes  is None: args.min_episodes  = 2
+    if args.success_thres is None: args.success_thres = 0.5
+    if args.top_N         is None: args.top_N         = 10
 
     if not args.symbols:
         print("ERROR: No symbols provided. Please supply at least one via --symbols.", file=sys.stderr)
