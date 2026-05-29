@@ -18,12 +18,12 @@ For each OHLC touch of start_price one episode is generated:
 
 Usage example:
   python scan_price_backtest.py --mode sg --symbols D05 C6L --tp_level 8
-  python scan_price_backtest.py --mode us --symbols AAPL MSFT NVDA --sort_by succ_abs
+  python scan_price_backtest.py --mode us --symbols AAPL MSFT NVDA --sort_by succ_pct
   python scan_price_backtest.py --mode us --symbols NVDA --price 800 --tp_level 15
   python scan_price_backtest.py --mode us --symbols TSLA NVDA MSFT --price 360 190 400
   python scan_price_backtest.py --mode us --symbols NVDA --price 190 200 210
   python scan_price_backtest.py --mode cc --symbols BTC ETH --tp_level 20
-  python scan_price_backtest.py --mode sg --symbols auto --min_episodes 3 --sort_by succ_abs
+  python scan_price_backtest.py --mode sg --symbols auto --min_episodes 3 --sort_by succ_pct
   python scan_price_backtest.py --mode us --symbols AAPL --window 3
 
 Notes:
@@ -45,8 +45,8 @@ Notes:
     * TP is triggered when intraday high >= start_price * (1 + tp_level/100).
     * default: 10 (10%%).
 - --sort_by controls sorting of the final summary table (applies to --symbols auto only):
-    * 'succ_pct':  sort by MR success rate %% (successes / total episodes), descending.
-    * 'succ_abs':  sort by absolute number of successes, descending (default).
+    * 'succ_pct':  sort by MR success rate %% (successes / total episodes), descending (default).
+    * 'succ_abs':  sort by absolute number of successes, descending.
     * 'none':      keep scan order as processed.
 - --min_episodes filters the output to only show symbols with at least N total episodes
     (default: 2; ignored when explicit symbols given).
@@ -628,10 +628,10 @@ def main():
     ap.add_argument(
         "--sort_by",
         choices=["succ_pct", "succ_abs", "none"],
-        default="succ_abs",
+        default="succ_pct",
         help=(
-            "Sort output by: 'succ_pct' (success %% descending), "
-            "'succ_abs' (absolute number of successes descending, default), "
+            "Sort output by: 'succ_pct' (success %% descending, default), "
+            "'succ_abs' (absolute number of successes descending), "
             "or 'none' (keep scan order)."
         ),
     )

@@ -33,10 +33,10 @@ BB(20,2):
 
 Usage example:
   python scan_mr_backtest.py --mode sg --symbols D05 C6L --tp_level 8
-  python scan_mr_backtest.py --mode us --symbols AAPL MSFT NVDA --sort_by succ_abs
+  python scan_mr_backtest.py --mode us --symbols AAPL MSFT NVDA --sort_by succ_pct
   python scan_mr_backtest.py --mode us --symbols NVDA --tp_level 15
   python scan_mr_backtest.py --mode cc --symbols BTC ETH --tp_level 20
-  python scan_mr_backtest.py --mode sg --symbols auto --min_episodes 3 --sort_by succ_abs
+  python scan_mr_backtest.py --mode sg --symbols auto --min_episodes 3 --sort_by succ_pct
   python scan_mr_backtest.py --mode us --symbols AAPL --window 3
   python scan_mr_backtest.py --mode us --symbols NVDA --z_thres -1.5 --delta_thres -3
 
@@ -59,8 +59,8 @@ Notes:
     * End of data reached before max_hold elapsed without TP → OPEN.
     * default: 20.
 - --sort_by controls sorting of the final summary table (applies to --symbols auto only):
-    * 'succ_pct':  sort by win rate %% (wins / total episodes), descending.
-    * 'succ_abs':  sort by absolute number of wins, descending (default).
+    * 'succ_pct':  sort by win rate %% (wins / total episodes), descending (default).
+    * 'succ_abs':  sort by absolute number of wins, descending.
     * 'none':      keep scan order.
 - --min_episodes filters the output to only show symbols with at least N total episodes
     (default: 2; ignored when explicit symbols given).
@@ -776,10 +776,10 @@ def main():
     ap.add_argument(
         "--sort_by",
         choices=["succ_pct", "succ_abs", "none"],
-        default="succ_abs",
+        default="succ_pct",
         help=(
-            "Sort output: 'succ_pct' (win %% descending), "
-            "'succ_abs' (win count descending, default), or 'none'."
+            "Sort output: 'succ_pct' (win %% descending, default), "
+            "'succ_abs' (win count descending), or 'none'."
         ),
     )
     ap.add_argument(
