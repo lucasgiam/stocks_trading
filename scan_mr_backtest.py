@@ -64,7 +64,8 @@ Notes:
     * 'none':      keep scan order.
 - --min_episodes filters the output to only show symbols with at least N total episodes
     (default: 2; ignored when explicit symbols given).
-- --success_thres filters to symbols whose win rate >= threshold
+- --success_thres filters to symbols whose closed-episode win rate
+    (wins / (wins + fails); OPEN episodes excluded as inconclusive) >= threshold
     (default: 0.5 = 50%%; ignored when explicit symbols given).
 - --top_N keep only the top N symbols after all filters (default: 10; 0 = show all;
     ignored when explicit symbols given).
@@ -597,8 +598,10 @@ def _print_summary(
     total_processed = len(results)
 
     def _eff_rate(r: dict) -> float:
-        # All wins are by construction within max_hold (hard-stopped at detection time)
-        return len(r["successes"]) / r["n_episodes"] if r["n_episodes"] else 0.0
+        n_win    = len(r["successes"])
+        n_fail   = sum(1 for ep in r["episodes"] if ep["outcome"] == "fail")
+        n_closed = n_win + n_fail
+        return n_win / n_closed if n_closed else 0.0
 
     filtered = [
         r for r in results
@@ -627,11 +630,12 @@ def _print_summary(
             return f"{x:.{_dp}f}" if is_finite(x) else "N/A"
 
         code     = res.get("disp_code", res["symbol"])
-        n_ep     = res["n_episodes"]
         n_succ   = len(res["successes"])
-        pct      = n_succ / n_ep * 100 if n_ep else 0
+        n_fail   = sum(1 for ep in res["episodes"] if ep["outcome"] == "fail")
+        n_closed = n_succ + n_fail
+        pct      = n_succ / n_closed * 100 if n_closed else 0
         hist_str = _date_range_str(res["data_start"], res["data_end"])
-        succ_str = f"{n_succ}/{n_ep} ({pct:.0f}%)"
+        succ_str = f"{n_succ}/{n_closed} ({pct:.0f}%)"
 
         print(sep)
         print(f"  {code}  ·  {res['name']}")

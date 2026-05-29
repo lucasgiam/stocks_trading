@@ -104,7 +104,7 @@ Key flags:
 | `--window` | `1` | Lookback in years |
 | `--max_hold` | `20` | TP not hit within max_hold trading days → FAIL; end of data within max_hold → OPEN |
 | `--min_episodes` | `2` | Minimum total episodes to include a symbol |
-| `--success_thres` | `0.5` | Minimum win rate (0.0–1.0) to include a symbol |
+| `--success_thres` | `0.5` | Minimum win rate WIN/(WIN+FAIL) — OPEN excluded as inconclusive (0.0–1.0) |
 | `--top_N` | `10` | Keep only the top N symbols after filtering; `0` = show all |
 | `--sort_by` | `succ_abs` | `succ_pct`, `succ_abs`, or `none` |
 | `--no_filters` | off | Disables min_episodes, success_thres, and top_N filters |
@@ -147,7 +147,7 @@ Key flags:
 | `--max_hold` | `20` | TP not hit within max_hold trading days → FAIL; end of data within max_hold → OPEN |
 | `--window` | `1` | Lookback in years |
 | `--min_episodes` | `2` | Minimum total episodes to include a symbol |
-| `--success_thres` | `0.5` | Minimum win rate (0.0–1.0) to include a symbol |
+| `--success_thres` | `0.5` | Minimum win rate WIN/(WIN+FAIL) — OPEN excluded as inconclusive (0.0–1.0) |
 | `--top_N` | `10` | Keep only the top N symbols after filtering; `0` = show all |
 | `--sort_by` | `succ_abs` | `succ_pct`, `succ_abs`, or `none` |
 | `--no_filters` | off | Disables min_episodes, success_thres, and top_N filters |

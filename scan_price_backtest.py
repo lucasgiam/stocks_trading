@@ -50,8 +50,8 @@ Notes:
     * 'none':      keep scan order as processed.
 - --min_episodes filters the output to only show symbols with at least N total episodes
     (default: 2; ignored when explicit symbols given).
-- --success_thres filters the output to only show symbols whose win rate
-    (wins / total episodes) meets the threshold
+- --success_thres filters the output to only show symbols whose closed-episode win rate
+    (wins / (wins + fails); OPEN episodes excluded as inconclusive) meets the threshold
     (default: 0.5 = 50%%; ignored when explicit symbols given).
 - --top_N keep only the top N symbols after all filters (default: 10; 0 = show all;
     ignored when explicit symbols given).
@@ -469,8 +469,10 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
     total_processed = len(results)
 
     def _eff_rate(r: dict) -> float:
-        # successes already only contain WIN episodes (TP hit within max_hold)
-        return len(r["successes"]) / r["n_episodes"] if r["n_episodes"] else 0.0
+        n_win    = len(r["successes"])
+        n_fail   = sum(1 for ep in r["episodes"] if ep["outcome"] == "fail")
+        n_closed = n_win + n_fail
+        return n_win / n_closed if n_closed else 0.0
 
     filtered = [
         r for r in results
@@ -500,12 +502,13 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
 
         code      = res.get("disp_code", res["symbol"])
         name      = res["name"]
-        n_ep      = res["n_episodes"]
 
         n_succ    = len(res["successes"])
-        pct       = n_succ / n_ep * 100 if n_ep else 0
+        n_fail    = sum(1 for ep in res["episodes"] if ep["outcome"] == "fail")
+        n_closed  = n_succ + n_fail
+        pct       = n_succ / n_closed * 100 if n_closed else 0
         hist_str  = _date_range_str(res["data_start"], res["data_end"])
-        succ_str  = f"{n_succ}/{n_ep} ({pct:.0f}%)"
+        succ_str  = f"{n_succ}/{n_closed} ({pct:.0f}%)"
         lc_val    = p(res["latest_close"])
 
         print(sep)
