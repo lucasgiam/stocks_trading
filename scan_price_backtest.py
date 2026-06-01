@@ -437,6 +437,14 @@ def analyze_mr(
             None,
         ) if scan_lows else None
 
+        scan_highs  = [valid_days[k][3] for k in range(entry_i + 1, scan_end_low)]
+        max_high    = max(scan_highs) if scan_highs else sp
+        max_high_ts = next(
+            (valid_days[k][1] for k in range(entry_i + 1, scan_end_low)
+             if valid_days[k][3] == max_high),
+            None,
+        ) if scan_highs else None
+
         # Z and ΔLC% at episode trigger day (entry_i), based on MA20/SD20 of that day
         if entry_i >= 19:
             window20  = close_arr[entry_i - 19: entry_i + 1]
@@ -470,6 +478,8 @@ def analyze_mr(
             "td_elapsed":         m - entry_i,
             "min_low":            min_low,
             "min_low_date":       ts_to_date(min_low_ts) if min_low_ts else None,
+            "max_high":           max_high,
+            "max_high_date":      ts_to_date(max_high_ts) if max_high_ts else None,
         })
 
         if outcome == "open":
@@ -596,32 +606,34 @@ def _print_summary(results: list[dict], min_episodes: int, max_hold: int, succes
                 exit_str = "open"
                 dur      = f"{ep['td_elapsed']} days"
                 status   = "[OPEN]"
-            low_val = p(ep["min_low"])
-            rows.append((ep["entry_date"], exit_str, dur, _fmt_pct(ep["lc_pct"]), _fmt_z(ep["z"]), sp_val, tp_val, low_val, status))
+            high_val = p(ep["max_high"])
+            low_val  = p(ep["min_low"])
+            rows.append((ep["entry_date"], exit_str, dur, _fmt_pct(ep["lc_pct"]), _fmt_z(ep["z"]), sp_val, tp_val, high_val, low_val, status))
 
         dur_w  = max(max(len(r[2]) for r in rows), len("Duration"))
         pct_w  = max(max(len(r[3]) for r in rows), len("ΔLC%"))
         z_w    = max(max(len(r[4]) for r in rows), len("Z"))
         ep_w   = max(max(len(r[5]) for r in rows), len("EP"))
         tp_w   = max(max(len(r[6]) for r in rows), len("TP"))
-        low_w  = max(max(len(r[7]) for r in rows), len("Low"))
-        stat_w = max(max(len(r[8]) for r in rows), len("Status"))
+        high_w = max(max(len(r[7]) for r in rows), len("High"))
+        low_w  = max(max(len(r[8]) for r in rows), len("Low"))
+        stat_w = max(max(len(r[9]) for r in rows), len("Status"))
 
         hdr = (
             f"  {'#':>3}  {'Entry':10}  {'→ Exit':12}  {'Duration':>{dur_w}}  "
-            f"{'ΔLC%':>{pct_w}}  {'Z':>{z_w}}  {'EP':>{ep_w}}  {'TP':>{tp_w}}  {'Low':>{low_w}}  Status"
+            f"{'ΔLC%':>{pct_w}}  {'Z':>{z_w}}  {'EP':>{ep_w}}  {'TP':>{tp_w}}  {'High':>{high_w}}  {'Low':>{low_w}}  Status"
         )
         rule = (
             f"  {'─'*3}  {'─'*10}  {'─'*12}  {'─'*dur_w}  "
-            f"{'─'*pct_w}  {'─'*z_w}  {'─'*ep_w}  {'─'*tp_w}  {'─'*low_w}  {'─'*stat_w}"
+            f"{'─'*pct_w}  {'─'*z_w}  {'─'*ep_w}  {'─'*tp_w}  {'─'*high_w}  {'─'*low_w}  {'─'*stat_w}"
         )
         print(hdr)
         print(rule)
 
-        for k, (entry_date, exit_str, dur, pct_val, z_val, ep_val, tp_val, low_val, status) in enumerate(rows, 1):
+        for k, (entry_date, exit_str, dur, pct_val, z_val, ep_val, tp_val, high_val, low_val, status) in enumerate(rows, 1):
             print(
                 f"  {k:>3}  {entry_date:10}  → {exit_str:<10}  {dur:>{dur_w}}  "
-                f"{pct_val:>{pct_w}}  {z_val:>{z_w}}  {ep_val:>{ep_w}}  {tp_val:>{tp_w}}  {low_val:>{low_w}}  {status}"
+                f"{pct_val:>{pct_w}}  {z_val:>{z_w}}  {ep_val:>{ep_w}}  {tp_val:>{tp_w}}  {high_val:>{high_w}}  {low_val:>{low_w}}  {status}"
             )
 
         print()
