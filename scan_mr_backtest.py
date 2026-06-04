@@ -44,9 +44,7 @@ Notes:
 - --mode selects:
     'sg' for SGX (codes like 'D05', 'C6L'; mapped to Yahoo by appending '.SI'),
     'us' for US stocks (codes like 'AAPL', 'GOOG'; used as-is),
-    'cc' for cryptocurrencies (codes like 'BTC', 'ETH'; mapped to Yahoo by appending '-USD'),
-    'id' for indexes (codes like '^STI', '^DJI'; used as-is for Yahoo, but '^' stripped in
-         display; any dot-suffix tickers e.g. ES3.SI are also accepted and suffix is stripped).
+    'cc' for cryptocurrencies (codes like 'BTC', 'ETH'; mapped to Yahoo by appending '-USD').
 - --symbols takes space-separated codes (no quotes), or 'auto' to load from all_<mode>_stocks.txt.
     When explicit symbols are provided (not 'auto'), all output filters are disabled
     automatically (equivalent to --no_filters) so every symbol is always shown.
@@ -750,11 +748,11 @@ def main():
     )
     ap.add_argument(
         "--mode",
-        choices=["sg", "us", "cc", "id"],
+        choices=["sg", "us", "cc"],
         required=True,
         help=(
             "'sg' SGX tickers (appends .SI),  'us' US stocks,  "
-            "'cc' crypto (appends -USD),  'id' indexes"
+            "'cc' crypto (appends -USD)"
         ),
     )
     ap.add_argument(
@@ -915,9 +913,6 @@ def main():
     elif args.mode == "cc":
         exclude_normalized = {ensure_cc(s) for s in exclude_symbols}
         normalized_symbols = [ensure_cc(s) for s in input_symbols]
-    elif args.mode == "id":
-        exclude_normalized = {ensure_idx(s) for s in exclude_symbols}
-        normalized_symbols = [ensure_idx(s) for s in input_symbols]
     else:  # us
         exclude_normalized = {s.strip().upper() for s in exclude_symbols}
         normalized_symbols = [s.strip().upper() for s in input_symbols]
@@ -952,13 +947,6 @@ def main():
                 disp_code = sym.removesuffix(".SI")
             elif args.mode == "cc":
                 disp_code = sym.removesuffix("-USD")
-            elif args.mode == "id":
-                if sym.startswith("^"):
-                    disp_code = sym[1:]
-                elif "." in sym:
-                    disp_code = sym.rsplit(".", 1)[0]
-                else:
-                    disp_code = sym
             else:
                 disp_code = sym
             res["disp_code"] = disp_code

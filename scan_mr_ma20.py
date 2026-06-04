@@ -15,15 +15,12 @@ Usage example:
   python scan_mr_ma20.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --z_thres 0 --sort_by delta
   python scan_mr_ma20.py --mode us --symbols AAPL GOOG MSFT NVDA --delta_thres 0 --z_thres 0 --sort_by z
   python scan_mr_ma20.py --mode cc --symbols BTC ETH SOL --delta_thres 0 --z_thres 0 --sort_by z
-  python scan_mr_ma20.py --mode id --symbols ^STI ^DJI ^NPX ^SPX --sort_by none
 
 Notes:
 - --mode selects:
     'sg' for SGX (codes like 'D05', 'C6L'; mapped to Yahoo by appending '.SI'),
     'us' for US stocks (codes like 'AAPL', 'GOOG'; used as-is),
-    'cc' for cryptocurrencies (codes like 'BTC', 'ETH'; mapped to Yahoo by appending '-USD'),
-    'id' for indexes (codes like '^STI', '^DJI'; used as-is for Yahoo, but '^' stripped in display; any dot-suffix
-         tickers (e.g. ES3.SI, 1329.T, 000001.SS) are also accepted and their suffix is stripped in display).
+    'cc' for cryptocurrencies (codes like 'BTC', 'ETH'; mapped to Yahoo by appending '-USD').
 - --symbols takes space-separated codes (no quotes), or 'auto' to load from all_<mode>_stocks.txt.
 - --delta_thres:
     * if X <= 0, keep rows where Delta% <= X
@@ -358,24 +355,21 @@ def main():
     )
     ap.add_argument(
         "--mode",
-        choices=["sg", "us", "cc", "id"],
+        choices=["sg", "us", "cc"],
         required=True,
         help=(
             "Market mode: 'sg' for SGX (codes like D05, C6L; '.SI' will be appended), "
             "'us' for US stocks (codes like AAPL, GOOG; used as-is), "
-            "'cc' for cryptocurrencies (codes like BTC, ETH; '-USD' will be appended), "
-            "'id' for indexes (codes like ^STI, ^DJI; used as-is for Yahoo)."
+            "'cc' for cryptocurrencies (codes like BTC, ETH; '-USD' will be appended)."
         ),
     )
     ap.add_argument(
         "--symbols",
         nargs="+",
         help=(
-            "Space-separated stock/crypto/index codes "
-            "(e.g., CC3 G13 for SGX; AAPL GOOG for US; BTC ETH for crypto; ^STI ^DJI for indexes). "
-            "For SGX, '.SI' suffix is optional. For crypto, '-USD' suffix is optional. "
-            "For indexes, '^' will be added if omitted. For --mode id with no symbols, "
-            "defaults to: ^STI ^DJI ^IXIC ^GSPC."
+            "Space-separated stock/crypto codes "
+            "(e.g., CC3 G13 for SGX; AAPL GOOG for US; BTC ETH for crypto). "
+            "For SGX, '.SI' suffix is optional. For crypto, '-USD' suffix is optional."
         ),
     )
     # Accept float (as string) or the string 'z'
@@ -473,9 +467,6 @@ def main():
     elif args.mode == "cc":
         exclude_normalized = {ensure_cc(s) for s in exclude_symbols}
         normalized_symbols = [ensure_cc(s) for s in input_symbols]
-    elif args.mode == "id":
-        exclude_normalized = {ensure_idx(s) for s in exclude_symbols}
-        normalized_symbols = [ensure_idx(s) for s in input_symbols]
     else:  # 'us'
         exclude_normalized = {s.strip().upper() for s in exclude_symbols}
         normalized_symbols = [s.strip().upper() for s in input_symbols]
@@ -557,13 +548,6 @@ def main():
                 disp_code = raw_code.removesuffix(".SI")
             elif args.mode == "cc":
                 disp_code = raw_code.removesuffix("-USD")
-            elif args.mode == "id":
-                if raw_code.startswith("^"):
-                    disp_code = raw_code[1:]
-                elif "." in raw_code:
-                    disp_code = raw_code.rsplit(".", 1)[0]
-                else:
-                    disp_code = raw_code
             else:
                 disp_code = raw_code
 

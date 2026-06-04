@@ -183,12 +183,6 @@ def disp_code_for_mode(raw_code: str, mode: str) -> str:
         return raw_code.removesuffix(".SI")
     if mode == "cc":
         return raw_code.removesuffix("-USD")
-    if mode == "id":
-        if raw_code.startswith("^"):
-            return raw_code[1:]
-        if "." in raw_code:
-            return raw_code.rsplit(".", 1)[0]
-        return raw_code
     return raw_code
 
 
@@ -259,11 +253,11 @@ def main():
     )
     ap.add_argument(
         "--mode",
-        choices=["sg", "us", "cc", "id"],
+        choices=["sg", "us", "cc"],
         required=True,
         help=(
             "Market mode: 'sg' for SGX ('.SI' appended), 'us' for US (as-is), "
-            "'cc' for crypto ('-USD' appended), 'id' for indexes (as-is, '^' allowed)."
+            "'cc' for crypto ('-USD' appended)."
         ),
     )
     ap.add_argument(
@@ -316,9 +310,6 @@ def main():
     elif args.mode == "cc":
         exclude_norm = {ensure_cc(s) for s in exclude_symbols}
         symbols_norm = [ensure_cc(s) for s in input_symbols]
-    elif args.mode == "id":
-        exclude_norm = {ensure_idx(s) for s in exclude_symbols}
-        symbols_norm = [ensure_idx(s) for s in input_symbols]
     else:  # us
         exclude_norm = {s.strip().upper() for s in exclude_symbols}
         symbols_norm = [s.strip().upper() for s in input_symbols]
