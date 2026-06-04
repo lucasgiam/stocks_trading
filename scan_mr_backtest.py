@@ -975,10 +975,16 @@ def main():
             durs = [ep["tp_dur_td"] for ep in r["successes"] if ep.get("tp_dur_td") is not None]
             return sum(durs) / len(durs) if durs else float("inf")
 
+        def _closed_rate(r):
+            n_win = len(r["successes"])
+            n_fail = sum(1 for ep in r["episodes"] if ep["outcome"] == "fail")
+            n_closed = n_win + n_fail
+            return n_win / n_closed if n_closed else 0.0
+
         if args.sort_by == "succ_pct":
             results.sort(
                 key=lambda r: (
-                    len(r["successes"]) / r["n_episodes"] if r["n_episodes"] else 0.0,
+                    _closed_rate(r),
                     len(r["successes"]),
                     -_avg_win_dur(r),
                 ),
@@ -988,7 +994,7 @@ def main():
             results.sort(
                 key=lambda r: (
                     len(r["successes"]),
-                    len(r["successes"]) / r["n_episodes"] if r["n_episodes"] else 0.0,
+                    _closed_rate(r),
                     -_avg_win_dur(r),
                 ),
                 reverse=True,
