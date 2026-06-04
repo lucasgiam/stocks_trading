@@ -5,7 +5,7 @@ Fetch daily prices from Yahoo Finance for a list of symbols and compute a Pearso
 on daily log returns over the past 200 trading days.
 
 Computation:
-- Uses adjusted close (adjclose) when available; if missing/empty (common for crypto), falls back to close.
+- Uses close price as returned by Yahoo Finance.
 - Daily log returns: r_t = ln(P_t / P_{t-1})
 - Uses the most recent 200 trading days of returns (requires 201 common price points).
 - Pearson correlation on log returns.
@@ -38,10 +38,9 @@ from tqdm import tqdm
 YF_HOME = "https://finance.yahoo.com/"
 YF_QUOTE_PAGE = "https://finance.yahoo.com/quote/{symbol}?p={symbol}"
 
-# 1 year of daily bars; include adjusted close
 YF_CHART_1Y_URL = (
     "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?"
-    "interval=1d&range=1y&includeAdjustedClose=true"
+    "interval=1d&range=1y"
 )
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -134,28 +133,15 @@ def is_finite(x) -> bool:
 
 
 def fetch_price_series_1y(symbol: str):
-    """
-    Return (timestamps, price_list) from Yahoo chart API.
-
-    Prefer adjusted close (adjclose). If adjclose is missing or contains no finite values
-    (common for crypto), fall back to close.
-    """
+    """Return (timestamps, close_list) from Yahoo chart API."""
     payload = http_get_json(YF_CHART_1Y_URL.format(symbol=symbol))
     result = payload.get("chart", {}).get("result", []) or []
     if not result:
         raise ValueError("No chart result")
     r0 = result[0]
-
     ts = r0.get("timestamp") or []
-    ind = (r0.get("indicators", {}) or {})
-
-    adj_arr = ((ind.get("adjclose", [{}]) or [{}])[0].get("adjclose")) or []
-    if any(is_finite(x) for x in adj_arr):
-        return ts, adj_arr
-
-    quote = (ind.get("quote", [{}]) or [{}])[0]
-    close_arr = quote.get("close") or []
-    return ts, close_arr
+    quote = ((r0.get("indicators", {}) or {}).get("quote", [{}]) or [{}])[0]
+    return ts, quote.get("close") or []
 
 
 def pearson_corr(x, y) -> float:

@@ -106,7 +106,7 @@ YF_SEARCH_URL = (
 )
 YF_CHART_URL = (
     "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-    "?interval=1d&range={range}&includeAdjustedClose=true"
+    "?interval=1d&range={range}"
 )
 
 UA = (
@@ -263,15 +263,17 @@ def fetch_chart(symbol: str, window: str = "1y") -> dict:
     if not result:
         raise ValueError("No chart result returned")
     r0    = result[0]
+    meta  = r0.get("meta", {}) or {}
     ind   = r0.get("indicators", {}) or {}
     quote = (ind.get("quote", [{}]) or [{}])[0]
     return {
-        "timestamps": r0.get("timestamp") or [],
-        "open":       quote.get("open")   or [],
-        "high":       quote.get("high")   or [],
-        "low":        quote.get("low")    or [],
-        "close":      quote.get("close")  or [],
-        "volume":     quote.get("volume") or [],
+        "timestamps":           r0.get("timestamp") or [],
+        "open":                 quote.get("open")   or [],
+        "high":                 quote.get("high")   or [],
+        "low":                  quote.get("low")    or [],
+        "close":                quote.get("close")  or [],
+        "volume":               quote.get("volume") or [],
+        "regular_market_price": meta.get("regularMarketPrice"),
     }
 
 
@@ -572,15 +574,19 @@ def analyze_mr_bb(
     last_ep   = episodes[-1] if episodes else None
     pending   = last_ep if (last_ep and last_ep["outcome"] == "open") else None
 
+    rmp = chart.get("regular_market_price")
+    lc  = rmp if is_finite(rmp) else valid_days[-1][2]
+
     # Today's Z and ΔLC% for the summary header (matches scan_mr_ma20.py output)
+    today_ma20 = _mean(close_arr[-20:]) if len(close_arr) >= 20 else float("nan")
+    today_sd20 = _std_sample(close_arr[-20:]) if len(close_arr) >= 20 else float("nan")
     today_z = (
-        z_arr[-1]
-        if z_arr and z_arr[-1] is not None and is_finite(z_arr[-1])
+        (lc - today_ma20) / today_sd20
+        if is_finite(today_ma20) and is_finite(today_sd20) and today_sd20 != 0
         else float("nan")
     )
-    today_ma20 = _mean(close_arr[-20:]) if len(close_arr) >= 20 else float("nan")
     today_lc_pct = (
-        100.0 * (close_arr[-1] - today_ma20) / today_ma20
+        100.0 * (lc - today_ma20) / today_ma20
         if is_finite(today_ma20) and today_ma20 != 0
         else float("nan")
     )
@@ -591,7 +597,7 @@ def analyze_mr_bb(
         "n_episodes":   len(episodes),
         "data_start":   ts_to_date(valid_days[0][1]),
         "data_end":     ts_to_date(valid_days[-1][1]),
-        "latest_close": valid_days[-1][2],
+        "latest_close": lc,
         "today_z":      today_z,
         "today_lc_pct": today_lc_pct,
         "episodes":     episodes,

@@ -70,10 +70,9 @@ YF_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbo
 YF_QUOTE_URL_ALT = "https://query2.finance.yahoo.com/v7/finance/quote?symbols={symbols}&lang=en-US&region=US"
 YF_SEARCH_URL = "https://query2.finance.yahoo.com/v1/finance/search?q={symbol}&quotesCount=1"
 
-# 1 year of daily bars; include adjusted close
 YF_CHART_1Y_URL = (
     "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?"
-    "interval=1d&range=1y&includeAdjustedClose=true"
+    "interval=1d&range=1y"
 )
 
 # quoteSummary URLs (currently not used in output, kept for possible future use)
@@ -225,12 +224,14 @@ def get_name_map(symbols_si):
 
 
 def fetch_chart_1y(symbol_si):
-    """Return dict with arrays: open, high, low, close, volume (may contain None)."""
+    """Return dict with arrays: open, high, low, close, volume (may contain None),
+    plus regular_market_price and chart_previous_close from meta."""
     payload = http_get_json(YF_CHART_1Y_URL.format(symbol=symbol_si))
     result = payload.get("chart", {}).get("result", []) or []
     if not result:
         raise ValueError("No chart result")
     r0 = result[0]
+    meta = r0.get("meta", {}) or {}
     ind = (r0.get("indicators", {}) or {})
     quote = (ind.get("quote", [{}]) or [{}])[0]
     return {
@@ -239,6 +240,8 @@ def fetch_chart_1y(symbol_si):
         "low": quote.get("low") or [],
         "close": quote.get("close") or [],
         "volume": quote.get("volume") or [],
+        "regular_market_price": meta.get("regularMarketPrice"),
+        "chart_previous_close": meta.get("chartPreviousClose"),
     }
 
 
@@ -530,8 +533,10 @@ def main():
             ma20 = ma_last(closes_valid, 20)
             ma200 = ma_last(closes_valid, 200)
 
-            latest = latest_non_none(closes)
-            prev_close = prev_non_none(closes)
+            rmp = chart.get("regular_market_price")
+            latest = rmp if is_finite(rmp) else latest_non_none(closes)
+            cpc = chart.get("chart_previous_close")
+            prev_close = cpc if is_finite(cpc) else prev_non_none(closes)
 
             sd20 = (
                 std_sample(closes_valid[-20:])

@@ -96,7 +96,7 @@ YF_SEARCH_URL = (
 )
 YF_CHART_URL = (
     "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-    "?interval=1d&range={range}&includeAdjustedClose=true"
+    "?interval=1d&range={range}"
 )
 
 UA = (
@@ -253,15 +253,17 @@ def fetch_chart(symbol: str, window: str = "1y") -> dict:
     if not result:
         raise ValueError("No chart result returned")
     r0    = result[0]
+    meta  = r0.get("meta", {}) or {}
     ind   = r0.get("indicators", {}) or {}
     quote = (ind.get("quote", [{}]) or [{}])[0]
     return {
-        "timestamps": r0.get("timestamp") or [],
-        "open":       quote.get("open")   or [],
-        "high":       quote.get("high")   or [],
-        "low":        quote.get("low")    or [],
-        "close":      quote.get("close")  or [],
-        "volume":     quote.get("volume") or [],
+        "timestamps":           r0.get("timestamp") or [],
+        "open":                 quote.get("open")   or [],
+        "high":                 quote.get("high")   or [],
+        "low":                  quote.get("low")    or [],
+        "close":                quote.get("close")  or [],
+        "volume":               quote.get("volume") or [],
+        "regular_market_price": meta.get("regularMarketPrice"),
     }
 
 
@@ -355,10 +357,13 @@ def analyze_mr(
     if not valid_days:
         raise ValueError("No valid OHLC prices in history")
 
+    rmp = chart.get("regular_market_price")
+    lc  = rmp if is_finite(rmp) else valid_days[-1][2]
+
     sp = (
         start_price
         if (start_price is not None and is_finite(start_price))
-        else valid_days[-1][2]
+        else lc
     )
 
     tp_price  = sp * (1 + tp_level)
@@ -496,9 +501,9 @@ def analyze_mr(
         ma20_today = _mean(close_arr[-20:])
         sd20_today = _std_sample(close_arr[-20:])
         if is_finite(ma20_today) and is_finite(sd20_today) and sd20_today != 0:
-            today_z = (close_arr[-1] - ma20_today) / sd20_today
+            today_z = (lc - ma20_today) / sd20_today
         if is_finite(ma20_today) and ma20_today != 0:
-            today_lc_pct = 100.0 * (close_arr[-1] - ma20_today) / ma20_today
+            today_lc_pct = 100.0 * (lc - ma20_today) / ma20_today
 
     return {
         "symbol":       symbol,
@@ -508,7 +513,7 @@ def analyze_mr(
         "n_episodes":   len(episodes),
         "data_start":   ts_to_date(valid_days[0][1]),
         "data_end":     ts_to_date(valid_days[-1][1]),
-        "latest_close": valid_days[-1][2],
+        "latest_close": lc,
         "today_z":      today_z,
         "today_lc_pct": today_lc_pct,
         "episodes":     episodes,
