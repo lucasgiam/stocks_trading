@@ -40,6 +40,12 @@ Usage example:
   python scan_mr_backtest.py --mode us --symbols AAPL --window 3
   python scan_mr_backtest.py --mode us --symbols NVDA --z_thres -1.5 --delta_thres -3
 
+Output per symbol includes a summary line of the form:
+  LC: XX | ΔLC%: Y% | Z: Z | Sample Success Rate: X/Y (Z%) | True Success Rate: A% to B%
+  where the True Success Rate is a 95% Wilson score confidence interval for the
+  underlying win probability, estimated from the closed-episode sample (wins + fails;
+  OPEN episodes are excluded as inconclusive).
+
 Notes:
 - --mode selects:
     'sg' for SGX (codes like 'D05', 'C6L'; mapped to Yahoo by appending '.SI'),
@@ -308,6 +314,26 @@ def _fmt_z(z) -> str:
 def _fmt_pct(pct) -> str:
     """Format a percentage value to 2 dp with % suffix."""
     return f"{pct:.2f}%" if is_finite(pct) else "N/A"
+
+
+def _wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """
+    Wilson score 95% CI for a binomial proportion.
+
+    Returns (lower_pct, upper_pct) as percentage values (0–100).
+    Handles n == 0 by returning (0.0, 100.0).
+    The Wilson interval is preferred over the normal approximation because it
+    stays within [0, 1] and performs well for small samples and extreme proportions.
+    """
+    if n == 0:
+        return (0.0, 100.0)
+    p_hat = k / n
+    z2 = z * z
+    center = (p_hat + z2 / (2 * n)) / (1 + z2 / n)
+    margin = (z / (1 + z2 / n)) * math.sqrt(p_hat * (1 - p_hat) / n + z2 / (4 * n * n))
+    lower = max(0.0, center - margin) * 100
+    upper = min(1.0, center + margin) * 100
+    return (lower, upper)
 
 
 # ─── BB(20,2) computation (same logic as scan_mr_ma20.py) ────────────────────
@@ -655,13 +681,15 @@ def _print_summary(
         n_closed        = n_succ + n_fail
         pct             = n_succ / n_closed * 100 if n_closed else 0
         succ_str        = f"{n_succ}/{n_closed} ({pct:.0f}%)"
+        ci_lo, ci_hi    = _wilson_ci(n_succ, n_closed)
+        ci_str          = f"{ci_lo:.0f}% to {ci_hi:.0f}%"
         z_today_str     = _fmt_z(res.get("today_z", float("nan")))
         delta_today_str = _fmt_pct(res.get("today_lc_pct", float("nan")))
 
         print(sep)
         print(f"  {code}  ·  {res['name']}")
         print(sep)
-        print(f"  LC: {p(lc)} | ΔLC%: {delta_today_str} | Z: {z_today_str} | Successes: {succ_str}")
+        print(f"  LC: {p(lc)} | ΔLC%: {delta_today_str} | Z: {z_today_str} | Sample Success Rate: {succ_str} | True Success Rate: {ci_str}")
         print()
 
         # Most recent episode first
