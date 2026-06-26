@@ -97,7 +97,7 @@ QUESTION_LABELS = {
     7: "50>200",    # stock's 50-SMA above its 200-SMA (golden-cross regime)
     8: "NEWHIGH",   # made a fresh 30d closing high vs. the prior 60d
     9: "NONEWLOW",  # no close in the past 30d broke below the prior 60d low
-    10: "VOLUP",    # more high-volume up days than down days (30d)
+    10: "VOLUMEUP", # more high-volume up days than down days (30d)
     11: "LIQUID",   # adequate trading liquidity
     12: "VOL>SEC",  # ATR50% volatility higher than the sector ETF/benchmark
     13: "VOL>IDX",  # ATR50% volatility higher than the broad index
