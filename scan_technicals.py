@@ -93,14 +93,14 @@ QUESTION_LABELS = {
     3: "RS>SEC",    # stock's 3mo return beats the sector ETF/benchmark
     4: "RS>IDX",    # stock's 3mo return beats the broad index
     5: ">200&UP",   # stock above & trending up on its own 200-SMA
-    6: ">50&OK",    # stock above its 50-SMA, but not >20% above it
+    6: ">50&FAIR",  # stock above its 50-SMA, but not >20% above it
     7: "50>200",    # stock's 50-SMA above its 200-SMA (golden-cross regime)
     8: "NEWHIGH",   # made a fresh 30d closing high vs. the prior 60d
     9: "NONEWLOW",  # no close in the past 30d broke below the prior 60d low
-    10: "VOLUMEUP", # more high-volume up days than down days (30d)
+    10: "VOLUP",    # more high-volume up days than down days (30d)
     11: "LIQUID",   # adequate trading liquidity
-    12: "VOL>SEC",  # ATR50% volatility higher than the sector ETF/benchmark
-    13: "VOL>IDX",  # ATR50% volatility higher than the broad index
+    12: "ATR>SEC",  # ATR50% volatility higher than the sector ETF/benchmark
+    13: "ATR>IDX",  # ATR50% volatility higher than the broad index
 }
 
 
@@ -240,6 +240,10 @@ def fetch_chart_2y(symbol):
         "volume": quote.get("volume") or [],
         "regular_market_price": meta.get("regularMarketPrice"),
     }
+
+
+def fmtf(x, w, p):
+    return f"{x:>{w}.{p}f}" if is_finite(x) else f"{'nan':>{w}}"
 
 
 def mean(vals):
@@ -586,7 +590,7 @@ def main():
     )
 
     q_headers = " ".join(f"{QUESTION_LABELS[n]:>8}" for n in qs)
-    header = f"{'Code':<6} {'Name':<32} {q_headers} {'Score':>6}"
+    header = f"{'Code':<6} {'Name':<32} {q_headers} {'Score':>6} {'ATR%':>5}"
     print(header)
     print("-" * len(header))
 
@@ -596,7 +600,8 @@ def main():
             f"{(r['Symbol'] or '')[:6]:<6} "
             f"{(r['Name'] or '')[:32]:<32} "
             f"{q_cells} "
-            f"{r['Score']:>3}/{max_score}"
+            f"{r['Score']:>3}/{max_score} "
+            f"{fmtf(r['ATR50%'], 5, 2)}"
         )
 
     if filtered:
