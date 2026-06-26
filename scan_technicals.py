@@ -7,8 +7,8 @@ questions per symbol, then report a total score per symbol.
 Data is pulled the same way as scan_mr_ma20.py (Yahoo chart endpoint,
 same cookie/crumb warm-up, same HTTP plumbing), but over a 2-year window
 instead of 1-year, since several questions need a 200-day SMA trend
-computed 30 trading days back (requires ~230 days of history) plus a
-prior 60-day comparison window before the most recent 30 days (~90 days).
+computed 20 trading days back (requires ~220 days of history) plus a
+prior 50-day comparison window before the most recent 20 days (~70 days).
 
 Usage examples:
   python scan_technicals.py --mode sg --symbols D05 C6L --sector S58 --sort_by score
@@ -32,17 +32,20 @@ Notes:
 - --sort_by:
     'score' (default): sort rows by total score, descending.
     'none': no sorting; keep scan order.
-- "past 3 months" = past 50 trading days throughout.
+- "past 3 months" = past 50 trading days throughout (Q3, Q4, Q10, Q11,
+  Q12, Q13). Q1, Q2, Q5, Q8, Q9 use a shorter, more recent 20-trading-day
+  window (for 200-SMA trend confirmation, or for fresh-high/fresh-low
+  checks against the prior 50-day period).
 - Volatility questions (Q12/Q13) use ATR50 expressed as a percent of price
   (ATR50 / price * 100), so that comparisons are fair across instruments
   trading at very different price levels (e.g. a stock vs. an index).
 - Q11 (liquidity) is not directly observable from chart data alone (no
   bid/ask spread is available from this endpoint), so it is approximated
   using the only two data series available - close and volume - over the
-  past 30 trading days:
+  past 50 trading days:
     * average daily dollar volume (close * volume) >= $200,000, and
-    * no more than 3 "illiquid days" in the past 30, where an illiquid day
-      is one with zero volume or volume below 10% of the 30-day average
+    * no more than 5 "illiquid days" in the past 50, where an illiquid day
+      is one with zero volume or volume below 10% of the 50-day average
       volume (used as a proxy for thin/absent trading and, indirectly,
       wide bid-ask spreads).
   These thresholds are reasonable defaults, not externally specified;
@@ -84,7 +87,7 @@ _CRUMB = None  # filled by warm_up_cookies_and_crumb()
 
 # ---------- Q11 liquidity thresholds (see module docstring) ----------
 LIQUIDITY_MIN_DOLLAR_VOL = 200_000.0
-LIQUIDITY_MAX_ILLIQUID_DAYS = 3
+LIQUIDITY_MAX_ILLIQUID_DAYS = 5
 
 # ---------- short column headers (max 8 chars) for each of the 13 questions ----------
 QUESTION_LABELS = {
@@ -95,9 +98,9 @@ QUESTION_LABELS = {
     5: ">200&UP",   # stock above & trending up on its own 200-SMA
     6: ">50&FAIR",  # stock above its 50-SMA, but not >20% above it
     7: "50>200",    # stock's 50-SMA above its 200-SMA (golden-cross regime)
-    8: "NEWHIGH",   # made a fresh 30d closing high vs. the prior 60d
-    9: "NONEWLOW",  # no close in the past 30d broke below the prior 60d low
-    10: "VOLUP",    # more high-volume up days than down days (30d)
+    8: "NEWHIGH",   # made a fresh 20d closing high vs. the prior 50d
+    9: "NONEWLOW",  # no close in the past 20d broke below the prior 50d low
+    10: "VOLUP",    # more high-volume up days than down days (50d)
     11: "LIQUID",   # adequate trading liquidity
     12: "ATR>SEC",  # ATR50% volatility higher than the sector ETF/benchmark
     13: "ATR>IDX",  # ATR50% volatility higher than the broad index
@@ -316,7 +319,7 @@ def compute_struct(chart):
     price = rmp if is_finite(rmp) else (closes[-1] if closes else float("nan"))
 
     sma200_now = sma(closes, 200, n)
-    sma200_30ago = sma(closes, 200, n - 30) if n - 30 >= 0 else float("nan")
+    sma200_20ago = sma(closes, 200, n - 20) if n - 20 >= 0 else float("nan")
     sma50_now = sma(closes, 50, n)
 
     if n >= 51 and is_finite(closes[-1]) and is_finite(closes[-51]) and closes[-51] != 0:
@@ -332,20 +335,20 @@ def compute_struct(chart):
         "closes": closes,
         "price": price,
         "sma200_now": sma200_now,
-        "sma200_30ago": sma200_30ago,
+        "sma200_20ago": sma200_20ago,
         "sma50_now": sma50_now,
         "ret50": ret50,
         "atr50_pct": atr50_pct,
     }
 
 
-def above_sma_and_trending(price, sma_now, sma_30ago):
+def above_sma_and_trending(price, sma_now, sma_20ago):
     return (
         is_finite(price)
         and is_finite(sma_now)
-        and is_finite(sma_30ago)
+        and is_finite(sma_20ago)
         and price > sma_now
-        and sma_now >= sma_30ago
+        and sma_now >= sma_20ago
     )
 
 
@@ -353,14 +356,14 @@ def evaluate_questions(stock, sector, idx, has_sector):
     q = {}
 
     if has_sector:
-        q[1] = above_sma_and_trending(sector["price"], sector["sma200_now"], sector["sma200_30ago"])
-    q[2] = above_sma_and_trending(idx["price"], idx["sma200_now"], idx["sma200_30ago"])
+        q[1] = above_sma_and_trending(sector["price"], sector["sma200_now"], sector["sma200_20ago"])
+    q[2] = above_sma_and_trending(idx["price"], idx["sma200_now"], idx["sma200_20ago"])
 
     if has_sector:
         q[3] = is_finite(stock["ret50"]) and is_finite(sector["ret50"]) and stock["ret50"] > sector["ret50"]
     q[4] = is_finite(stock["ret50"]) and is_finite(idx["ret50"]) and stock["ret50"] > idx["ret50"]
 
-    q[5] = above_sma_and_trending(stock["price"], stock["sma200_now"], stock["sma200_30ago"])
+    q[5] = above_sma_and_trending(stock["price"], stock["sma200_now"], stock["sma200_20ago"])
 
     q[6] = (
         is_finite(stock["price"])
@@ -373,26 +376,26 @@ def evaluate_questions(stock, sector, idx, has_sector):
 
     closes = stock["closes"]
     n = len(closes)
-    if n >= 90:
-        prior60 = closes[n - 90:n - 30]
-        last30 = closes[n - 30:n]
-        q[8] = any(c > max(prior60) for c in last30)
-        q[9] = not any(c < min(prior60) for c in last30)
+    if n >= 70:
+        prior50 = closes[n - 70:n - 20]
+        last20 = closes[n - 20:n]
+        q[8] = any(c > max(prior50) for c in last20)
+        q[9] = not any(c < min(prior50) for c in last20)
     else:
         q[8] = False
         q[9] = False
 
     rows = stock["rows"]
-    if n >= 31:
-        idxs = range(n - 30, n)
-        vols30 = [rows[i]["volume"] for i in idxs if is_finite(rows[i]["volume"])]
-        avg_vol30 = mean(vols30) if vols30 else float("nan")
+    if n >= 51:
+        idxs = range(n - 50, n)
+        vols50 = [rows[i]["volume"] for i in idxs if is_finite(rows[i]["volume"])]
+        avg_vol50 = mean(vols50) if vols50 else float("nan")
         up = down = 0
         for i in idxs:
             prev_c, cur_c, vol = rows[i - 1]["close"], rows[i]["close"], rows[i]["volume"]
-            if not (is_finite(prev_c) and is_finite(cur_c) and is_finite(vol) and is_finite(avg_vol30)):
+            if not (is_finite(prev_c) and is_finite(cur_c) and is_finite(vol) and is_finite(avg_vol50)):
                 continue
-            if vol <= avg_vol30:
+            if vol <= avg_vol50:
                 continue
             if cur_c > prev_c:
                 up += 1
@@ -402,18 +405,18 @@ def evaluate_questions(stock, sector, idx, has_sector):
     else:
         q[10] = False
 
-    if n >= 30:
-        last30_rows = rows[n - 30:n]
+    if n >= 50:
+        last50_rows = rows[n - 50:n]
         dollar_vols = [
             r["close"] * r["volume"]
-            for r in last30_rows
+            for r in last50_rows
             if is_finite(r["close"]) and is_finite(r["volume"])
         ]
-        vols_only = [r["volume"] for r in last30_rows if is_finite(r["volume"])]
+        vols_only = [r["volume"] for r in last50_rows if is_finite(r["volume"])]
         avg_dollar_vol = mean(dollar_vols) if dollar_vols else float("nan")
         avg_vol = mean(vols_only) if vols_only else float("nan")
         illiquid_days = 0
-        for r in last30_rows:
+        for r in last50_rows:
             v = r["volume"]
             if not is_finite(v) or v == 0 or (is_finite(avg_vol) and avg_vol > 0 and v < 0.1 * avg_vol):
                 illiquid_days += 1

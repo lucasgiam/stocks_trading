@@ -20,6 +20,7 @@ stocks_trading/
 ├── scan_price_backtest.py # Episode-based price-level backtester
 ├── scan_mr_backtest.py    # BB(20,2) lower-band MR backtester
 ├── scan_corr.py           # Pearson correlation heatmap on daily log returns
+├── scan_technicals.py     # 13-question true/false technical scorer
 ├── dedupe_symbols.py      # Utility: remove duplicates from a symbol list file
 ├── extract_symbols.py     # Utility: extract symbols from column A of a CSV
 ├── all_sg_stocks.txt      # SGX tickers (used with --symbols auto --mode sg)
@@ -168,6 +169,49 @@ python scan_corr.py --mode us --symbols AAPL MSFT NVDA TSLA
 # Auto-scan all US stocks
 python scan_corr.py --mode us --symbols auto
 ```
+
+---
+
+## scan_technicals.py — 13-question technical scorer
+
+Answers 13 yes/no (1/0) technical questions per symbol and reports a total score. Only `--mode sg` and `--mode us` are supported (no `cc`/`id`). Data is pulled over a 2-year window so the 200-day SMA trend checks have enough history.
+
+1. Relevant sector ETF/industry benchmark is above its 200-day SMA, and its 200-day SMA is flat or rising over the past 20 days.
+2. Relevant broad market index is above its 200-day SMA, and its 200-day SMA is flat or rising over the past 20 days.
+3. The stock's total return is higher than the relevant sector ETF/industry benchmark's total return over the past 50 days.
+4. The stock's total return is higher than the relevant broad market index's total return over the past 50 days.
+5. The stock's current price is above its 200-day SMA, and its 200-day SMA is flat or rising over the past 20 days.
+6. The stock's current price is above its 50-day SMA, but not more than 20% above it.
+7. The stock's 50-day SMA is above its 200-day SMA.
+8. The stock had at least one daily close in the past 20 days above the highest daily close from its prior 50-day period.
+9. The stock had no daily closes in the past 20 days below the lowest daily close from its prior 50-day period.
+10. The stock had more high-volume up days than high-volume down days in the past 50 days, where high-volume refers to volume above the 50-day average.
+11. The stock has adequate trading liquidity in the past 50 days, shown by meaningful average daily dollar volume and no evidence of persistently wide bid-ask spreads, unusually low trading volume, or frequent illiquid trading days.
+12. The stock's ATR50 is higher than the relevant sector ETF/industry benchmark's ATR50.
+13. The stock's ATR50 is higher than the relevant broad market index's ATR50.
+
+```bash
+# SGX with a sector reference — all 13 questions answered
+python scan_technicals.py --mode sg --symbols D05 C6L --sector S58 --sort_by score
+
+# US with a sector ETF reference
+python scan_technicals.py --mode us --symbols AAPL MSFT NVDA --sector XLK
+
+# US, no sector reference (Q1/Q3/Q12 skipped, 10 questions answered)
+python scan_technicals.py --mode us --symbols AAPL MSFT --sort_by none
+
+# Auto-scan all US stocks, only show symbols scoring at least 8
+python scan_technicals.py --mode us --symbols auto --sector XLK --score_thres 8
+```
+
+Key flags:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--sector` | — | Sector ETF/industry benchmark symbol; if omitted, Q1/Q3/Q12 are skipped |
+| `--sort_by` | `score` | `score` (descending, ties broken by ATR50%) or `none` |
+| `--score_thres` | `0` | Minimum score required for a symbol to appear in the output |
+| `--sleep` | `0.3` | Seconds to sleep between requests |
 
 ---
 
