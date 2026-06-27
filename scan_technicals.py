@@ -462,7 +462,7 @@ def main():
         "--sector",
         default=None,
         help="Single symbol representing the relevant sector ETF / industry benchmark. "
-             "If provided, all 13 questions are answered; otherwise Q1/Q3/Q12 are skipped.",
+             "If provided, all 13 questions are answered; otherwise the 3 sector-related questions are skipped.",
     )
     ap.add_argument(
         "--sort_by",
@@ -585,7 +585,7 @@ def main():
 
     print(
         f"\nMode={args.mode} | Broad index={broad_index_symbol}"
-        f"{' | Sector ref=' + sector_symbol if has_sector else ' | Sector ref=(none, Q1/Q3/Q12 skipped)'}"
+        f"{' | Sector ref=' + sector_symbol if has_sector else ' | Sector ref=(none, 3 sector-related quetions skipped)'}"
     )
     print(
         f"Scored {len(results)} symbols out of {max_score} applicable questions, "
