@@ -4,12 +4,13 @@ scan_mr_ma20.py
 Scan SGX, US, crypto, or index tickers on Yahoo and compute:
 - LC (latest close)
 - MA20   (20-day moving average)
+- MA50   (50-day moving average)
 - MA200  (200-day moving average)
 - ΔLC%   = 100 * (LC - MA20) / MA20
 - SD20   (20-day sample standard deviation of closes, ddof=1)
 - Z      = (LC - MA20) / SD20
-- ATR14  (simple average of TR for past 14 days)
-- ATR%   = ATR14 / LC * 100
+- ATR50  (simple average of TR for past 50 days)
+- ATR%   = ATR50 / LC * 100
 
 Usage example:
   python scan_mr_ma20.py --mode sg --symbols CC3 G13 N2IU C6L --delta_thres 0 --z_thres 0 --sort_by delta
@@ -508,6 +509,7 @@ def main():
                 raise ValueError("No close prices in 1Y history")
 
             ma20 = ma_last(closes_valid, 20)
+            ma50 = ma_last(closes_valid, 50)
             ma200 = ma_last(closes_valid, 200)
 
             rmp = chart.get("regular_market_price")
@@ -536,13 +538,13 @@ def main():
                 else float("nan")
             )
 
-            # ATR14 (simple average of last 14 TR values)
-            atr14 = atr_last_from_ohlc(highs, lows, closes, 14)
+            # ATR50 (simple average of last 50 TR values)
+            atr50 = atr_last_from_ohlc(highs, lows, closes, 50)
 
-            # ATR% = ATR14 / LC * 100
+            # ATR% = ATR50 / LC * 100
             atr_pct = (
-                100.0 * atr14 / latest
-                if is_finite(atr14) and is_finite(latest) and latest != 0
+                100.0 * atr50 / latest
+                if is_finite(atr50) and is_finite(latest) and latest != 0
                 else float("nan")
             )
 
@@ -561,11 +563,12 @@ def main():
                     "Name": name_map.get(sym, sym),
                     "LC": latest,
                     "MA20": ma20,
+                    "MA50": ma50,
                     "MA200": ma200,
                     "Delta%": delta_pct,
                     "SD20": sd20,
                     "Z": z,
-                    "ATR14": atr14,
+                    "ATR50": atr50,
                     "ATR%": atr_pct,
                 }
             )
@@ -702,7 +705,7 @@ def main():
     # ===== One-row compact table (short labels & widths) =====
     header = (
         f"{'Code':<6} {'Name':<42} "
-        f"{'LC':>6} {'MA20':>6} {'MA200':>6} {'ΔLC%':>6} {'SD20':>6} {'Z':>5} {'ATR14':>6} {'ATR%':>5}"
+        f"{'LC':>6} {'MA20':>6} {'MA50':>6} {'MA200':>6} {'ΔLC%':>6} {'SD20':>6} {'Z':>5} {'ATR50':>6} {'ATR%':>5}"
     )
     print(header)
     print("-" * len(header))
@@ -713,11 +716,12 @@ def main():
             f"{(r['Name'] or '')[:42]:<42} "
             f"{fmt_price(r['LC'],      6)} "
             f"{fmt_price(r['MA20'],    6)} "
+            f"{fmt_price(r['MA50'],    6)} "
             f"{fmt_price(r['MA200'],   6)} "
             f"{fmtf(r['Delta%'],       6, 2)} "
             f"{fmt_price(r['SD20'],    6)} "
             f"{fmtf(r['Z'],            5, 2)} "
-            f"{fmt_price(r['ATR14'],   6)} "
+            f"{fmt_price(r['ATR50'],   6)} "
             f"{fmtf(r['ATR%'],         5, 2)}"
         )
         # stack = ma_stack_str(r)
