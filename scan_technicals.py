@@ -13,7 +13,7 @@ swing-low / volume / return checks over the most recent 20-50 days.
 
 Usage examples:
   python scan_technicals.py --mode sg --symbols D05 C6L --sort_by score
-  python scan_technicals.py --mode us --symbols AAPL MSFT NVDA --sort_by score
+  python scan_technicals.py --mode us --symbols AAPL MSFT NVDA --sort_by score delta
   python scan_technicals.py --mode us --symbols AAPL MSFT --delta_thres 0 --z_thres 0 --sort_by delta
   python scan_technicals.py --mode us --symbols AAPL MSFT --sort_by none
 
@@ -41,7 +41,12 @@ Notes:
     * if X <= 0, keep rows where Z <= X
     * if X > 0, keep rows where Z > X.
 - --sort_by:
-    'score' (default): sort rows by total score, descending.
+    'score' (default): sort rows by total score, descending. Optionally followed by a
+             secondary tiebreaker key ('delta', 'z', or 'atr'; default 'atr'), e.g.
+             '--sort_by score delta' sorts by score first, then ΔLC%. For 'delta'/'z'
+             secondary keys, the tiebreak direction follows the same sign convention as
+             the standalone --sort_by delta/z below (driven by --delta_thres/--z_thres).
+             'atr' has no threshold and always breaks ties most-volatile-first.
     'delta': sort by ΔLC%; increasing (most negative first) unless delta_thres > 0,
              in which case decreasing (most positive first).
     'z':     sort by Z; increasing (most negative first) unless z_thres > 0,
@@ -632,10 +637,15 @@ def main():
     )
     ap.add_argument(
         "--sort_by",
-        choices=["none", "score", "delta", "z"],
-        default="score",
+        nargs="+",
+        default=["score"],
+        metavar="MODE [SECONDARY]",
         help=(
-            "'score' (default): sort rows by total score, descending. "
+            "'score' (default): sort rows by total score, descending. Optionally followed by a secondary "
+            "tiebreaker key ('delta', 'z', or 'atr'; default 'atr'), e.g. '--sort_by score delta' sorts by "
+            "score first, then ΔLC%% to break ties. For 'delta'/'z' secondary keys, tiebreak direction "
+            "follows the corresponding delta_thres/z_thres sign (≤0 or unset → most negative first; >0 → "
+            "most positive first); 'atr' has no threshold and always breaks ties most-volatile-first. "
             "'delta': sort by ΔLC%%; if delta_thres <= 0 or not specified → increasing (most negative first), "
             "if delta_thres > 0 → decreasing (most positive first). "
             "'z': sort by Z; if z_thres <= 0 or not specified → increasing (most negative first), "
@@ -675,6 +685,19 @@ def main():
         help="Seconds to sleep between requests.",
     )
     args = ap.parse_args()
+
+    sort_mode = args.sort_by[0]
+    if sort_mode not in ("none", "score", "delta", "z"):
+        ap.error(f"--sort_by: invalid mode '{sort_mode}' (choose from none, score, delta, z)")
+    sort_secondary = "atr"
+    if len(args.sort_by) > 1:
+        if sort_mode != "score":
+            ap.error("--sort_by: a secondary key is only valid when the primary mode is 'score'")
+        if len(args.sort_by) > 2:
+            ap.error("--sort_by: at most two values are allowed (mode and secondary key)")
+        sort_secondary = args.sort_by[1]
+        if sort_secondary not in ("delta", "z", "atr"):
+            ap.error(f"--sort_by: invalid secondary key '{sort_secondary}' (choose from delta, z, atr)")
 
     normalize = ensure_si if args.mode == "sg" else (lambda t: t.strip().upper())
     broad_index_symbol = "^STI" if args.mode == "sg" else "^GSPC"
@@ -795,15 +818,38 @@ def main():
             applied.append(f"Z > {zt:.2f}")
 
     # ----- Sorting -----
-    if args.sort_by == "score":
-        # Primary: Score descending. Tiebreaker: ATR14% descending (more volatile ranks higher).
-        filtered.sort(
-            key=lambda r: (r["Score"], r["ATR14%"] if is_finite(r["ATR14%"]) else float("-inf")),
-            reverse=True,
-        )
-    elif args.sort_by in ("delta", "z"):
-        metric_key = "Delta%" if args.sort_by == "delta" else "Z"
-        thr_arg = args.delta_thres if args.sort_by == "delta" else args.z_thres
+    if sort_mode == "score":
+        # Primary: Score descending. Tiebreaker: secondary key, direction following the
+        # same delta_thres/z_thres sign convention as standalone --sort_by delta/z below
+        # (negative or unset thres → most negative first; positive thres → most positive
+        # first). 'atr' has no threshold, so it always breaks ties descending (most
+        # volatile first), matching the previous default behavior.
+        secondary_field = {"atr": "ATR14%", "delta": "Delta%", "z": "Z"}[sort_secondary]
+        if sort_secondary == "atr":
+            secondary_descending = True
+        else:
+            thr_arg = args.delta_thres if sort_secondary == "delta" else args.z_thres
+            secondary_descending = False
+            if thr_arg is not None and not (isinstance(thr_arg, str) and thr_arg.lower() == "z"):
+                if float(thr_arg) > 0:
+                    secondary_descending = True
+
+        if secondary_descending:
+            def secondary_key(r):
+                v = r.get(secondary_field)
+                return (0, -v) if is_finite(v) else (1, float("inf"))
+        else:
+            def secondary_key(r):
+                v = r.get(secondary_field)
+                return (0, v) if is_finite(v) else (1, float("inf"))
+
+        # Stable two-pass sort: order by secondary key first, then by Score (descending);
+        # ties on Score keep their relative secondary-key order from the first pass.
+        filtered.sort(key=secondary_key)
+        filtered.sort(key=lambda r: r["Score"], reverse=True)
+    elif sort_mode in ("delta", "z"):
+        metric_key = "Delta%" if sort_mode == "delta" else "Z"
+        thr_arg = args.delta_thres if sort_mode == "delta" else args.z_thres
         descending = False
         if thr_arg is not None and not (isinstance(thr_arg, str) and thr_arg.lower() == "z"):
             if float(thr_arg) > 0:
