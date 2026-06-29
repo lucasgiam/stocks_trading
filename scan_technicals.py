@@ -66,7 +66,7 @@ Notes:
        the 2 closes immediately before it and the 2 closes immediately after
        it (a 5-bar pivot); if no confirmed swing low exists in the window,
        this question is answered No.
-    9. Stock has 3 or fewer high-volume down days in the past 20 days, where
+    9. Stock has 4 or fewer high-volume down days in the past 20 days, where
        "high volume" means volume above the average volume of that same
        20-day window.
     10. Stock's total down-day volume does not exceed its total up-day volume
@@ -142,7 +142,7 @@ QUESTION_LABELS = {
     6: "Q6",    # stock's 50-SMA above its 200-SMA (golden-cross regime)
     7: "Q7",    # price above its lowest close in the past 20 days
     8: "Q8",    # price above most recent confirmed swing-low close (50d)
-    9: "Q9",    # 3 or fewer high-volume down days in past 20 days
+    9: "Q9",    # 4 or fewer high-volume down days in past 20 days
     10: "Q10",  # down-day volume doesn't exceed up-day volume by >50% (20d)
     11: "Q11",  # adequate trading liquidity (past 20 days)
     12: "Q12",  # ATR14% of price at least ATR_PCT_MIN_THRESHOLD
@@ -158,7 +158,7 @@ QUESTION_TEXT = {
     6: "The stock's 50-day SMA is above its 200-day SMA.",
     7: "The stock's current price is above its lowest daily close in the past 20 days.",
     8: "The stock's current price is above the most recent swing low close in the past 50 days.",
-    9: "The stock has 3 or less high-volume down days in the past 20 days, where high-volume means volume above the 20-day average.",
+    9: "The stock has 4 or less high-volume down days in the past 20 days, where high-volume means volume above the 20-day average.",
     10: "The stock's total down-day volume does not exceed its total up-day volume by more than 50% in the past 20 days.",
     11: "The stock has adequate trading liquidity in the past 20 days, with meaningful dollar volume and no signs of wide spreads, thin volume, or frequent illiquid trading days.",
     12: "The stock's 14-day ATR divided by its current price is at least 4%.",
@@ -497,7 +497,7 @@ def evaluate_questions(stock, idx):
     else:
         q[8] = False
 
-    # Q9: 3 or fewer high-volume down days in the past 20 days.
+    # Q9: 4 or fewer high-volume down days in the past 20 days.
     if n >= 21:
         idxs20 = range(n - 20, n)
         vols20 = [rows[i]["volume"] for i in idxs20 if is_finite(rows[i]["volume"])]
@@ -509,7 +509,7 @@ def evaluate_questions(stock, idx):
                 continue
             if vol > avg_vol20 and cur_c < prev_c:
                 hv_down += 1
-        q[9] = hv_down <= 3
+        q[9] = hv_down <= 4
     else:
         q[9] = False
 
