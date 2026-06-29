@@ -1,7 +1,7 @@
 """
 scan_technicals.py
 
-Scan SGX or US tickers on Yahoo and answer 15 yes/no (1/0) technical
+Scan SGX or US tickers on Yahoo and answer 12 yes/no (1/0) technical
 questions per symbol, then report a total score per symbol.
 
 Data is pulled the same way as scan_mr_ma20.py (Yahoo chart endpoint,
@@ -52,14 +52,14 @@ Notes:
     'z':     sort by Z; increasing (most negative first) unless z_thres > 0,
              in which case decreasing (most positive first).
     'none': no sorting; keep scan order.
-- The 15 questions (Q1-Q15):
-    1. Broad market index is above its 200-day SMA.
-    2. Broad market index's 200-day SMA is flat or rising over the past 20 days.
-    3. Stock's current price is above its 200-day SMA.
-    4. Stock's 200-day SMA is flat or rising over the past 20 days.
-    5. Stock's 50-day SMA is above its 200-day SMA.
-    6. Stock's daily closes were above its (trailing) 200-day SMA on at
-       least 40 of the past 50 days.
+- The 12 questions (Q1-Q12):
+    1. Relevant broad market index is above its 200-day SMA.
+    2. Relevant broad market index's 200-day SMA is flat or rising.
+    3. Stock's total return is higher than the relevant broad market index's
+       total return in the past 50 days.
+    4. Stock's current price is above its 200-day SMA.
+    5. Stock's 200-day SMA is flat or rising over the past 20 days.
+    6. Stock's 50-day SMA is above its 200-day SMA.
     7. Stock's current price is above its lowest daily close in the past 20 days.
     8. Stock's current price is above the most recent confirmed swing-low
        close in the past 50 days. A swing low is a close that is lower than
@@ -71,18 +71,11 @@ Notes:
        20-day window.
     10. Stock's total down-day volume does not exceed its total up-day volume
         by more than 50% in the past 20 days.
-    11. Stock's latest 3-day return is better than the worst 3-day return
-        observed in the past 20 days (rolling 3-day returns, ending on each
-        of the last 20 trading days).
-    12. Stock's latest close is within the upper half of its daily
-        high-low range.
-    13. Stock has adequate trading liquidity in the past 20 days, approximated
+    11. Stock has adequate trading liquidity in the past 20 days, approximated
         from close/volume only (see LIQUIDITY_* constants below).
-    14. Stock's 14-day ATR, expressed as a percent of current price, is at
+    12. Stock's 14-day ATR, expressed as a percent of current price, is at
         least ATR_PCT_MIN_THRESHOLD (see constant below).
-    15. Stock's total return over the past 50 days is higher than the broad
-        market index's total return over the same period.
-- Liquidity (Q13) is not directly observable from chart data alone (no
+- Liquidity (Q11) is not directly observable from chart data alone (no
   bid/ask spread is available from this endpoint), so it is approximated
   using the only two data series available - close and volume - over the
   past 20 trading days:
@@ -132,49 +125,43 @@ _CRUMB = None  # filled by warm_up_cookies_and_crumb()
 SWING_LEFT_BARS = 2
 SWING_RIGHT_BARS = 2
 
-# ---------- Q13 liquidity thresholds (see module docstring) ----------
+# ---------- Q11 liquidity thresholds (see module docstring) ----------
 LIQUIDITY_MIN_DOLLAR_VOL = 200_000.0
 LIQUIDITY_MAX_ILLIQUID_DAYS = 2
 
-# ---------- Q14 ATR14% minimum threshold ----------
+# ---------- Q12 ATR14% minimum threshold ----------
 ATR_PCT_MIN_THRESHOLD = 4.0
 
-# ---------- short column headers ("Q1".."Q15") for each of the 15 questions ----------
+# ---------- short column headers ("Q1".."Q12") for each of the 12 questions ----------
 QUESTION_LABELS = {
     1: "Q1",    # broad index above its 200-SMA
-    2: "Q2",    # broad index's 200-SMA flat or rising (past 20d)
-    3: "Q3",    # stock price above its own 200-SMA
-    4: "Q4",    # stock's 200-SMA flat or rising (past 20d)
-    5: "Q5",    # stock's 50-SMA above its 200-SMA (golden-cross regime)
-    6: "Q6",    # closes above trailing 200-SMA on >=40 of past 50 days
+    2: "Q2",    # broad index's 200-SMA flat or rising
+    3: "Q3",    # stock's 50d return beats the broad index's 50d return
+    4: "Q4",    # stock price above its own 200-SMA
+    5: "Q5",    # stock's 200-SMA flat or rising (past 20d)
+    6: "Q6",    # stock's 50-SMA above its 200-SMA (golden-cross regime)
     7: "Q7",    # price above its lowest close in the past 20 days
     8: "Q8",    # price above most recent confirmed swing-low close (50d)
     9: "Q9",    # 3 or fewer high-volume down days in past 20 days
     10: "Q10",  # down-day volume doesn't exceed up-day volume by >50% (20d)
-    11: "Q11",  # latest 3-day return beats the worst 3-day return (20d)
-    12: "Q12",  # latest close in upper half of its daily high-low range
-    13: "Q13",  # adequate trading liquidity (past 20 days)
-    14: "Q14",  # ATR14% of price at least ATR_PCT_MIN_THRESHOLD
-    15: "Q15",  # stock's 50d return beats the broad index's 50d return
+    11: "Q11",  # adequate trading liquidity (past 20 days)
+    12: "Q12",  # ATR14% of price at least ATR_PCT_MIN_THRESHOLD
 }
 
-# ---------- full wording of each of the 15 questions (printed above the table) ----------
+# ---------- full wording of each of the 12 questions (printed above the table) ----------
 QUESTION_TEXT = {
     1: "Relevant broad market index is above its 200-day SMA.",
     2: "Relevant broad market index's 200-day SMA is flat or rising.",
-    3: "The stock's current price is above its 200-day SMA.",
-    4: "The stock's 200-day SMA is flat or rising over the past 20 days.",
-    5: "The stock's 50-day SMA is above its 200-day SMA.",
-    6: "The stock's daily closes were above its 200-day SMA in at least 40 out of the past 50 days.",
+    3: "The stock total return is higher than the relevant broad market index's total return in the past 50 days.",
+    4: "The stock's current price is above its 200-day SMA.",
+    5: "The stock's 200-day SMA is flat or rising over the past 20 days.",
+    6: "The stock's 50-day SMA is above its 200-day SMA.",
     7: "The stock's current price is above its lowest daily close in the past 20 days.",
     8: "The stock's current price is above the most recent swing low close in the past 50 days.",
     9: "The stock has 3 or less high-volume down days in the past 20 days, where high-volume means volume above the 20-day average.",
     10: "The stock's total down-day volume does not exceed its total up-day volume by more than 50% in the past 20 days.",
-    11: "The stock's latest 3-day return is better than the worst 3-day return in the past 20 days.",
-    12: "The stock's latest close is within the upper half of its daily high-low range.",
-    13: "The stock has adequate trading liquidity in the past 20 days, shown by meaningful average daily dollar volume and no evidence of persistently wide bid-ask spreads, unusually low trading volume, or frequent illiquid trading days.",
-    14: "The stock's 14-day ATR divided by its current price is at least 4%.",
-    15: "The stock total return is higher than the relevant broad market index's total return in the past 50 days.",
+    11: "The stock has adequate trading liquidity in the past 20 days, with meaningful dollar volume and no signs of wide spreads, thin volume, or frequent illiquid trading days.",
+    12: "The stock's 14-day ATR divided by its current price is at least 4%.",
 }
 
 
@@ -421,7 +408,7 @@ def build_rows(chart):
 
 
 def compute_struct(chart):
-    """Derive all the per-instrument metrics needed across the 15 questions."""
+    """Derive all the per-instrument metrics needed across the 12 questions."""
     rows = build_rows(chart)
     closes = [r["close"] for r in rows]
     highs = [r["high"] if is_finite(r["high"]) else float("nan") for r in rows]
@@ -479,28 +466,16 @@ def evaluate_questions(stock, idx):
 
     q[1] = is_finite(idx["price"]) and is_finite(idx["sma200_now"]) and idx["price"] > idx["sma200_now"]
     q[2] = is_finite(idx["sma200_now"]) and is_finite(idx["sma200_20ago"]) and idx["sma200_now"] >= idx["sma200_20ago"]
+    q[3] = is_finite(stock["ret50"]) and is_finite(idx["ret50"]) and stock["ret50"] > idx["ret50"]
 
-    q[3] = is_finite(stock["price"]) and is_finite(stock["sma200_now"]) and stock["price"] > stock["sma200_now"]
-    q[4] = is_finite(stock["sma200_now"]) and is_finite(stock["sma200_20ago"]) and stock["sma200_now"] >= stock["sma200_20ago"]
-    q[5] = is_finite(stock["sma50_now"]) and is_finite(stock["sma200_now"]) and stock["sma50_now"] > stock["sma200_now"]
+    q[4] = is_finite(stock["price"]) and is_finite(stock["sma200_now"]) and stock["price"] > stock["sma200_now"]
+    q[5] = is_finite(stock["sma200_now"]) and is_finite(stock["sma200_20ago"]) and stock["sma200_now"] >= stock["sma200_20ago"]
+    q[6] = is_finite(stock["sma50_now"]) and is_finite(stock["sma200_now"]) and stock["sma50_now"] > stock["sma200_now"]
 
     closes = stock["closes"]
-    highs = stock["highs"]
-    lows = stock["lows"]
     rows = stock["rows"]
     price = stock["price"]
     n = len(closes)
-
-    # Q6: closes above trailing 200-SMA on >=40 of the past 50 days.
-    if n >= 250:
-        cnt = 0
-        for i in range(n - 50, n):
-            trailing_sma200 = sma(closes, 200, i + 1)
-            if is_finite(closes[i]) and is_finite(trailing_sma200) and closes[i] > trailing_sma200:
-                cnt += 1
-        q[6] = cnt >= 40
-    else:
-        q[6] = False
 
     # Q7: price above lowest close in the past 20 days.
     if n >= 20:
@@ -556,30 +531,7 @@ def evaluate_questions(stock, idx):
     else:
         q[10] = False
 
-    # Q11: latest 3-day return better than the worst 3-day return in the past 20 days.
-    if n >= 23:
-        def ret3(i):
-            if i - 3 < 0 or not (is_finite(closes[i]) and is_finite(closes[i - 3])) or closes[i - 3] == 0:
-                return float("nan")
-            return closes[i] / closes[i - 3] - 1.0
-
-        window_rets = [r for r in (ret3(i) for i in range(n - 20, n)) if is_finite(r)]
-        latest_ret3 = ret3(n - 1)
-        if window_rets and is_finite(latest_ret3):
-            q[11] = latest_ret3 > min(window_rets)
-        else:
-            q[11] = False
-    else:
-        q[11] = False
-
-    # Q12: latest close within the upper half of its daily high-low range.
-    if n >= 1 and is_finite(closes[-1]) and is_finite(highs[-1]) and is_finite(lows[-1]):
-        h, l, c = highs[-1], lows[-1], closes[-1]
-        q[12] = True if h <= l else (c - l) / (h - l) >= 0.5
-    else:
-        q[12] = False
-
-    # Q13: adequate trading liquidity over the past 20 days.
+    # Q11: adequate trading liquidity over the past 20 days.
     if n >= 20:
         last20_rows = rows[n - 20:n]
         dollar_vols = [
@@ -595,26 +547,23 @@ def evaluate_questions(stock, idx):
             v = r["volume"]
             if not is_finite(v) or v == 0 or (is_finite(avg_vol) and avg_vol > 0 and v < 0.1 * avg_vol):
                 illiquid_days += 1
-        q[13] = (
+        q[11] = (
             is_finite(avg_dollar_vol)
             and avg_dollar_vol >= LIQUIDITY_MIN_DOLLAR_VOL
             and illiquid_days <= LIQUIDITY_MAX_ILLIQUID_DAYS
         )
     else:
-        q[13] = False
+        q[11] = False
 
-    # Q14: ATR14 as a percent of price is at least ATR_PCT_MIN_THRESHOLD.
-    q[14] = is_finite(stock["atr14_pct"]) and stock["atr14_pct"] >= ATR_PCT_MIN_THRESHOLD
-
-    # Q15: stock's 50-day return beats the broad index's 50-day return.
-    q[15] = is_finite(stock["ret50"]) and is_finite(idx["ret50"]) and stock["ret50"] > idx["ret50"]
+    # Q12: ATR14 as a percent of price is at least ATR_PCT_MIN_THRESHOLD.
+    q[12] = is_finite(stock["atr14_pct"]) and stock["atr14_pct"] >= ATR_PCT_MIN_THRESHOLD
 
     return q
 
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Scan SGX/US tickers (Yahoo) and score 15 technical yes/no questions per symbol."
+        description="Scan SGX/US tickers (Yahoo) and score 12 technical yes/no questions per symbol."
     )
     ap.add_argument(
         "--mode",
@@ -779,7 +728,7 @@ def main():
         finally:
             time.sleep(args.sleep)
 
-    qs = list(range(1, 16))
+    qs = list(range(1, 13))
     max_score = len(qs)
 
     filtered = [r for r in results if r["Score"] >= args.score_thres]
