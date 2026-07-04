@@ -84,213 +84,24 @@ Notes:
 from __future__ import annotations
 
 import argparse
-import gzip
-import http.cookiejar as cookielib
-import json
 import math
-import re
 import sys
 import time
-import urllib.request
-import zlib
-from collections import Counter
-from datetime import datetime, timezone
 
 from tqdm import tqdm
 
-# ─── Yahoo Finance endpoints ──────────────────────────────────────────────────
-
-YF_HOME       = "https://finance.yahoo.com/"
-YF_GET_CRUMB  = "https://query1.finance.yahoo.com/v1/test/getcrumb"
-YF_QUOTE_PAGE = "https://finance.yahoo.com/quote/{symbol}?p={symbol}"
-YF_QUOTE_URL  = (
-    "https://query1.finance.yahoo.com/v7/finance/quote"
-    "?symbols={symbols}&lang=en-US&region=US"
+from yf_common import (
+    analyze_mr_bb,
+    build_symbol_list,
+    compute_lower_bb,
+    compute_z_arr,
+    fetch_chart,
+    get_name_map,
+    is_finite,
+    load_auto_symbols,
+    ts_to_date,
+    warm_up_cookies_and_crumb,
 )
-YF_SEARCH_URL = (
-    "https://query2.finance.yahoo.com/v1/finance/search?q={symbol}&quotesCount=1"
-)
-YF_CHART_URL = (
-    "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-    "?interval=1d&range={range}"
-)
-
-UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/131.0.0.0 Safari/537.36"
-)
-_CJ     = cookielib.CookieJar()
-_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_CJ))
-_CRUMB  = None
-
-
-# ─── HTTP helpers (identical to scan_price_backtest.py) ──────────────────────
-
-def _decompress_and_decode(resp, data: bytes) -> str:
-    enc = (resp.headers.get("Content-Encoding") or "").lower()
-    if enc == "gzip" or (len(data) > 2 and data[:2] == b"\x1f\x8b"):
-        data = gzip.decompress(data)
-    elif enc == "deflate":
-        data = zlib.decompress(data, -zlib.MAX_WBITS)
-    return data.decode("utf-8", errors="replace")
-
-
-def http_get_json(url, timeout=20):
-    if "{crumb}" in url:
-        url = url.format(crumb=_CRUMB or "")
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent":      UA,
-            "Accept":          "application/json,text/plain,*/*",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Accept-Language": "en-US,en;q=0.8",
-            "Connection":      "keep-alive",
-            "Referer":         "https://finance.yahoo.com/",
-            "Origin":          "https://finance.yahoo.com",
-            "Pragma":          "no-cache",
-            "Cache-Control":   "no-cache",
-        },
-    )
-    with _OPENER.open(req, timeout=timeout) as resp:
-        data = resp.read()
-        text = _decompress_and_decode(resp, data)
-        return json.loads(text)
-
-
-def http_get_text(url, timeout=20):
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent":      UA,
-            "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Accept-Language": "en-US,en;q=0.8",
-            "Connection":      "keep-alive",
-            "Referer":         "https://finance.yahoo.com/",
-            "Origin":          "https://finance.yahoo.com",
-            "Pragma":          "no-cache",
-            "Cache-Control":   "no-cache",
-        },
-    )
-    with _OPENER.open(req, timeout=timeout) as resp:
-        data = resp.read()
-        return _decompress_and_decode(resp, data)
-
-
-def warm_up_cookies_and_crumb(symbol_for_visit: str):
-    global _CRUMB
-    try:
-        _ = http_get_text(YF_HOME)
-        time.sleep(0.3)
-        _ = http_get_text(YF_QUOTE_PAGE.format(symbol=symbol_for_visit))
-        time.sleep(0.3)
-        try:
-            crumb_text = http_get_text(YF_GET_CRUMB).strip()
-            if crumb_text and len(crumb_text) < 64:
-                _CRUMB = crumb_text
-        except Exception as e:
-            print(f"[WARN] crumb fetch failed: {e}", file=sys.stderr)
-    except Exception as e:
-        print(f"[WARN] warm-up failed: {e}", file=sys.stderr)
-
-
-# ─── Ticker normalizers ───────────────────────────────────────────────────────
-
-def ensure_si(ticker: str) -> str:
-    t = ticker.strip().upper()
-    return t if t.endswith(".SI") else f"{t}.SI"
-
-
-def ensure_cc(ticker: str) -> str:
-    t = ticker.strip().upper()
-    return t if t.endswith("-USD") else f"{t}-USD"
-
-
-def ensure_idx(ticker: str) -> str:
-    t = ticker.strip().upper()
-    if t.startswith("^"):
-        return t
-    if re.search(r"\.[A-Z0-9]+$", t):
-        return t
-    return t
-
-
-# ─── Name lookup ─────────────────────────────────────────────────────────────
-
-def try_quote_names(symbols: list[str]) -> dict:
-    name_map = {s: s for s in symbols}
-    try:
-        payload = http_get_json(YF_QUOTE_URL.format(symbols=",".join(symbols)))
-        for q in payload.get("quoteResponse", {}).get("result", []):
-            sym = q.get("symbol", "")
-            nm  = (
-                q.get("shortName")
-                or q.get("longName")
-                or q.get("displayName")
-                or sym
-            )
-            name_map[sym] = nm
-    except Exception:
-        pass
-    return name_map
-
-
-def try_search_name(symbol: str) -> str:
-    try:
-        p = http_get_json(YF_SEARCH_URL.format(symbol=symbol))
-        quotes = p.get("quotes", []) or []
-        if quotes:
-            return (
-                quotes[0].get("shortname")
-                or quotes[0].get("longname")
-                or symbol
-            )
-    except Exception:
-        pass
-    return symbol
-
-
-def get_name_map(symbols: list[str]) -> dict:
-    nm = try_quote_names(symbols)
-    for s in symbols:
-        if not nm.get(s) or nm.get(s) == s:
-            nm[s] = try_search_name(s)
-    return nm
-
-
-# ─── Chart fetch ──────────────────────────────────────────────────────────────
-
-def fetch_chart(symbol: str, window: str = "1y") -> dict:
-    """Fetch daily OHLCV + Unix timestamps from Yahoo Finance for the given window."""
-    payload = http_get_json(YF_CHART_URL.format(symbol=symbol, range=window))
-    result  = payload.get("chart", {}).get("result", []) or []
-    if not result:
-        raise ValueError("No chart result returned")
-    r0    = result[0]
-    meta  = r0.get("meta", {}) or {}
-    ind   = r0.get("indicators", {}) or {}
-    quote = (ind.get("quote", [{}]) or [{}])[0]
-    return {
-        "timestamps":           r0.get("timestamp") or [],
-        "open":                 quote.get("open")   or [],
-        "high":                 quote.get("high")   or [],
-        "low":                  quote.get("low")    or [],
-        "close":                quote.get("close")  or [],
-        "volume":               quote.get("volume") or [],
-        "regular_market_price": meta.get("regularMarketPrice"),
-    }
-
-
-# ─── Utilities ────────────────────────────────────────────────────────────────
-
-def is_finite(x) -> bool:
-    return isinstance(x, (int, float)) and math.isfinite(x)
-
-
-def ts_to_date(ts) -> str:
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
 def _auto_dp(price) -> int:
@@ -307,12 +118,10 @@ def _auto_dp(price) -> int:
 
 
 def _fmt_z(z) -> str:
-    """Format Z-score to 2 dp (matches scan_mr_ma20.py display)."""
     return f"{z:.2f}" if is_finite(z) else "N/A"
 
 
 def _fmt_pct(pct) -> str:
-    """Format a percentage value to 2 dp with % suffix."""
     return f"{pct:.2f}%" if is_finite(pct) else "N/A"
 
 
@@ -336,300 +145,11 @@ def _wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     return (lower, upper)
 
 
-# ─── BB(20,2) computation (same logic as scan_mr_ma20.py) ────────────────────
+# ─── Core analysis (imported from yf_common) ─────────────────────────────────
+# analyze_mr_bb, compute_lower_bb, compute_z_arr, ts_to_date live in yf_common.py
 
-def _mean(vals: list[float]) -> float:
-    return sum(vals) / len(vals) if vals else float("nan")
-
-
-def _std_sample(vals: list[float]) -> float:
-    n = len(vals)
-    if n < 2:
-        return float("nan")
-    m = _mean(vals)
-    return math.sqrt(sum((x - m) ** 2 for x in vals) / (n - 1))
-
-
-def compute_lower_bb(closes: list[float], period: int = 20, num_std: float = 2.0) -> list:
-    """
-    Return lower BB for each bar.  None for the first (period-1) bars where
-    there is insufficient history.  Uses ddof=1 (sample std), matching scan_mr_ma20.py.
-    """
-    result = []
-    for i in range(len(closes)):
-        if i < period - 1:
-            result.append(None)
-        else:
-            window = closes[i - period + 1 : i + 1]
-            ma = _mean(window)
-            sd = _std_sample(window)
-            result.append(ma - num_std * sd if (is_finite(ma) and is_finite(sd)) else None)
-    return result
-
-
-def compute_z_arr(closes: list[float], period: int = 20) -> list:
-    """
-    Return Z-score (close − MA(period)) / SD(period) for each bar.
-    None for the first (period-1) bars.  Uses ddof=1, matching scan_mr_ma20.py.
-    """
-    result = []
-    for i in range(len(closes)):
-        if i < period - 1:
-            result.append(None)
-        else:
-            window = closes[i - period + 1 : i + 1]
-            ma = _mean(window)
-            sd = _std_sample(window)
-            result.append(
-                (closes[i] - ma) / sd
-                if (is_finite(ma) and is_finite(sd) and sd != 0)
-                else None
-            )
-    return result
-
-
-# ─── Core analysis ────────────────────────────────────────────────────────────
-
-def analyze_mr_bb(
-    symbol: str,
-    name: str,
-    chart: dict,
-    tp_level: float,
-    max_hold: int,
-    z_thres: float = -2.0,
-    delta_thres: float | None = None,
-) -> dict:
-    """
-    Episode-based MR analysis driven by Z-score threshold touches.
-
-    Trigger  : close Z-score (= (close − MA20) / SD20) <= z_thres,
-               AND (if delta_thres is set) ΔLC% = 100*(trigger_close−MA20)/MA20 <= delta_thres.
-               Default z_thres=-2.0 is equivalent to touching the BB(20,2) lower band.
-    Consecutive-touch rule: once an episode is active, no new episode starts until
-    the current one resolves (WIN or FAIL).  After resolution the scan resumes from
-    the next bar and looks for the next trigger.
-
-    Outcomes stored per episode:
-      'win'  — intraday high >= tp_price within max_hold trading days.
-      'fail' — max_hold trading days elapsed without hitting tp_price.
-      'open' — end of data reached inside the max_hold window with no TP hit.
-    """
-    closes     = chart["close"]
-    highs      = chart["high"]
-    lows       = chart["low"]
-    opens      = chart["open"]
-    timestamps = chart["timestamps"]
-
-    n = min(len(closes), len(highs), len(lows), len(opens), len(timestamps))
-
-    valid_days = [
-        (i, ts, c, h, lo, o)
-        for i, (ts, c, h, lo, o) in enumerate(
-            zip(timestamps[:n], closes[:n], highs[:n], lows[:n], opens[:n])
-        )
-        if (
-            c  is not None and is_finite(c)
-            and h  is not None and is_finite(h)
-            and lo is not None and is_finite(lo)
-            and o is not None and is_finite(o)
-        )
-    ]
-
-    if len(valid_days) < 20:
-        raise ValueError(
-            f"Only {len(valid_days)} valid bars — need at least 20 to compute BB(20,2)"
-        )
-
-    m         = len(valid_days)
-    close_arr = [vd[2] for vd in valid_days]
-    lb_arr    = compute_lower_bb(close_arr)   # list[float | None], length m
-    z_arr     = compute_z_arr(close_arr)      # list[float | None], length m
-
-    episodes: list[dict] = []
-    i = 19   # first bar with valid stats (needs 20 bars for MA20/SD20)
-
-    while i < m:
-        lb  = lb_arr[i]
-        z_i = z_arr[i]
-
-        # Skip bars where Z is unavailable or above the trigger threshold
-        if z_i is None or not is_finite(z_i) or z_i > z_thres:
-            i += 1
-            continue
-
-        # ── Episode start ─────────────────────────────────────────────────────
-        trigger_i = i
-        entry_i   = trigger_i + 1   # episode starts the following bar
-
-        # Skip if no next bar exists or its open is invalid
-        if entry_i >= m:
-            i += 1
-            continue
-        entry_price = valid_days[entry_i][5]   # index 5 = open
-        if entry_price is None or not is_finite(entry_price):
-            i += 1
-            continue
-
-        lower_bb_entry = lb
-        tp_price       = entry_price * (1 + tp_level)
-
-        # Z, MA20, and ΔLC% from the trigger day's close
-        z_entry      = z_i if is_finite(z_i) else float("nan")
-        ma20_trigger = _mean(close_arr[trigger_i - 19 : trigger_i + 1])
-        lc_pct_entry = (
-            100.0 * (close_arr[trigger_i] - ma20_trigger) / ma20_trigger
-            if (is_finite(ma20_trigger) and ma20_trigger != 0)
-            else float("nan")
-        )
-
-        # Optional ΔLC% filter: trigger day's close vs MA20 (same value in the ΔLC% column)
-        if delta_thres is not None:
-            if not is_finite(lc_pct_entry) or lc_pct_entry > delta_thres:
-                i += 1
-                continue
-
-        # Scan max_hold bars starting from entry_i (inclusive) for an intraday TP hit
-        search_end = min(entry_i + max_hold, m)
-        first_tp_k = None
-
-        for k in range(entry_i, search_end):
-            if valid_days[k][3] >= tp_price:   # index 3 = high
-                first_tp_k = k
-                break
-
-        if first_tp_k is not None:
-            # WIN
-            outcome          = "win"
-            tp_dur           = first_tp_k - entry_i
-            fail_date        = None
-            eventual_tp_date = None
-            eventual_tp_dur  = None
-            scan_end_low     = first_tp_k + 1
-            i_next           = first_tp_k + 1
-        elif entry_i + max_hold > m:
-            # OPEN: ran out of data before max_hold expired
-            outcome          = "open"
-            tp_dur           = None
-            fail_date        = None
-            eventual_tp_date = None
-            eventual_tp_dur  = None
-            scan_end_low     = m
-            i_next           = m
-        else:
-            # FAIL: max_hold exhausted — but keep scanning to see if TP eventually hits
-            outcome      = "fail"
-            tp_dur       = None
-            fail_date    = ts_to_date(valid_days[search_end - 1][1])
-            scan_end_low = search_end
-            i_next       = search_end
-
-            eventual_tp_k = None
-            for _k in range(search_end, m):
-                if valid_days[_k][3] >= tp_price:
-                    eventual_tp_k = _k
-                    break
-            eventual_tp_date = (
-                ts_to_date(valid_days[eventual_tp_k][1]) if eventual_tp_k is not None else None
-            )
-            eventual_tp_dur = (
-                eventual_tp_k - entry_i if eventual_tp_k is not None else None
-            )
-
-        # Min intraday low during the episode (entry_i → scan_end_low, inclusive)
-        scan_lows  = [valid_days[k][4] for k in range(entry_i, scan_end_low)]
-        min_low    = min(scan_lows) if scan_lows else entry_price
-        min_low_ts = next(
-            (valid_days[k][1] for k in range(entry_i, scan_end_low)
-             if valid_days[k][4] == min_low),
-            None,
-        ) if scan_lows else None
-
-        # Max intraday high during the episode (entry_i → scan_end_low, inclusive)
-        scan_highs  = [valid_days[k][3] for k in range(entry_i, scan_end_low)]
-        max_high    = max(scan_highs) if scan_highs else entry_price
-        max_high_ts = next(
-            (valid_days[k][1] for k in range(entry_i, scan_end_low)
-             if valid_days[k][3] == max_high),
-            None,
-        ) if scan_highs else None
-
-        episodes.append({
-            "entry_date":         ts_to_date(valid_days[entry_i][1]),
-            "entry_price":        entry_price,
-            "lower_bb":           lower_bb_entry,
-            "z":                  z_entry,
-            "lc_pct":             lc_pct_entry,
-            "tp_price":           tp_price,
-            "outcome":            outcome,
-            "first_tp_date":      ts_to_date(valid_days[first_tp_k][1]) if first_tp_k is not None else None,
-            "tp_dur_td":          tp_dur,
-            "fail_date":          fail_date,
-            "eventual_tp_date":   eventual_tp_date,
-            "eventual_tp_dur_td": eventual_tp_dur,
-            "td_elapsed":         m - entry_i,   # trading bars from entry to end of data
-            "min_low":            min_low,
-            "min_low_date":       ts_to_date(min_low_ts) if min_low_ts else None,
-            "max_high":           max_high,
-            "max_high_date":      ts_to_date(max_high_ts) if max_high_ts else None,
-        })
-
-        # ── Reset condition ───────────────────────────────────────────────────
-        # A new episode is only allowed after Z >= z_thres/10 has been observed
-        # at least once since the trigger.  This prevents chaining episodes
-        # inside a persistent downtrend.  Check whether the reset was already
-        # seen within the episode window (trigger_i .. i_next-1).
-        reset_level = z_thres / 10.0
-        reset_met = any(
-            z_arr[k] is not None and is_finite(z_arr[k]) and z_arr[k] >= reset_level
-            for k in range(trigger_i, i_next)
-        )
-
-        if reset_met:
-            i = i_next
-        else:
-            # Fast-forward until the first bar where Z >= reset_level, then
-            # start looking for the next trigger from that point.
-            i = i_next
-            while i < m:
-                z_j = z_arr[i]
-                if z_j is not None and is_finite(z_j) and z_j >= reset_level:
-                    break
-                i += 1
-
-    successes = [ep for ep in episodes if ep["outcome"] == "win"]
-    last_ep   = episodes[-1] if episodes else None
-    pending   = last_ep if (last_ep and last_ep["outcome"] == "open") else None
-
-    rmp = chart.get("regular_market_price")
-    lc  = rmp if is_finite(rmp) else valid_days[-1][2]
-
-    # Today's Z and ΔLC% for the summary header (matches scan_mr_ma20.py output)
-    today_ma20 = _mean(close_arr[-20:]) if len(close_arr) >= 20 else float("nan")
-    today_sd20 = _std_sample(close_arr[-20:]) if len(close_arr) >= 20 else float("nan")
-    today_z = (
-        (lc - today_ma20) / today_sd20
-        if is_finite(today_ma20) and is_finite(today_sd20) and today_sd20 != 0
-        else float("nan")
-    )
-    today_lc_pct = (
-        100.0 * (lc - today_ma20) / today_ma20
-        if is_finite(today_ma20) and today_ma20 != 0
-        else float("nan")
-    )
-
-    return {
-        "symbol":       symbol,
-        "name":         name,
-        "n_episodes":   len(episodes),
-        "data_start":   ts_to_date(valid_days[0][1]),
-        "data_end":     ts_to_date(valid_days[-1][1]),
-        "latest_close": lc,
-        "today_z":      today_z,
-        "today_lc_pct": today_lc_pct,
-        "episodes":     episodes,
-        "successes":    successes,
-        "pending":      pending,
-    }
+# Silence unused-import linters for symbols re-exported for callers of this module.
+_ = (analyze_mr_bb, compute_lower_bb, compute_z_arr, ts_to_date)
 
 
 # ─── Terminal output ──────────────────────────────────────────────────────────
@@ -922,46 +442,16 @@ def main():
 
     # Resolve 'auto' from file
     if is_auto:
-        auto_file = f"all_{args.mode}_stocks.txt"
         try:
-            with open(auto_file, "r", encoding="utf-8") as f:
-                text = f.read()
-        except FileNotFoundError:
-            print(f"ERROR: Auto symbols file not found: {auto_file}", file=sys.stderr)
-            return
-        except Exception as e:
-            print(f"ERROR: Failed to read auto symbols file {auto_file}: {e}", file=sys.stderr)
-            return
-        input_symbols = text.split()
-        if not input_symbols:
-            print(f"ERROR: Auto symbols file {auto_file} contains no symbols.", file=sys.stderr)
+            input_symbols = load_auto_symbols(args.mode)
+        except (FileNotFoundError, ValueError) as e:
+            print(f"ERROR: {e}", file=sys.stderr)
             return
     else:
         input_symbols = args.symbols
 
     exclude_symbols = args.exclude if args.exclude else []
-
-    if args.mode == "sg":
-        exclude_normalized = {ensure_si(s) for s in exclude_symbols}
-        normalized_symbols = [ensure_si(s) for s in input_symbols]
-    elif args.mode == "cc":
-        exclude_normalized = {ensure_cc(s) for s in exclude_symbols}
-        normalized_symbols = [ensure_cc(s) for s in input_symbols]
-    else:  # us
-        exclude_normalized = {s.strip().upper() for s in exclude_symbols}
-        normalized_symbols = [s.strip().upper() for s in input_symbols]
-
-    counts     = Counter(normalized_symbols)
-    duplicates = [f"{sym} (x{counts[sym]})" for sym in counts if counts[sym] > 1]
-    if duplicates:
-        print("[WARN] Duplicate codes detected (will be de-duplicated): " + ", ".join(duplicates))
-
-    seen: set      = set()
-    symbols_list: list[str] = []
-    for sym in normalized_symbols:
-        if sym not in seen and sym not in exclude_normalized:
-            seen.add(sym)
-            symbols_list.append(sym)
+    symbols_list = build_symbol_list(args.mode, input_symbols, exclude_symbols)
 
     print("[INFO] Fetching scanning data...")
     try:
@@ -977,13 +467,9 @@ def main():
             chart = fetch_chart(sym, args.window)
             res   = analyze_mr_bb(sym, name_map.get(sym, sym), chart, args.tp_level, args.max_hold, args.z_thres, args.delta_thres)
 
-            if args.mode == "sg":
-                disp_code = sym.removesuffix(".SI")
-            elif args.mode == "cc":
-                disp_code = sym.removesuffix("-USD")
-            else:
-                disp_code = sym
-            res["disp_code"] = disp_code
+            res["disp_code"] = sym.removesuffix(".SI") if args.mode == "sg" else (
+                sym.removesuffix("-USD") if args.mode == "cc" else sym
+            )
 
             results.append(res)
         except Exception as e:

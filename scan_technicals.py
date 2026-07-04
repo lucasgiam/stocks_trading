@@ -1,21 +1,18 @@
 """
 scan_technicals.py
 
-Scan SGX or US tickers on Yahoo and answer 12 yes/no (1/0) technical
+Scan SGX or US tickers on Yahoo and answer 15 yes/no (1/0) technical
 questions per symbol, then report a total score per symbol.
 
-Data is pulled the same way as scan_mr_ma20.py (Yahoo chart endpoint,
-same cookie/crumb warm-up, same HTTP plumbing), but over a 2-year window
-instead of 1-year, since several questions need a 200-day SMA trend
-computed 20 trading days back (requires ~220 days of history), a
-40-of-50-days-above-200-SMA check (requires ~250 days of history), plus
-swing-low / volume / return checks over the most recent 20-50 days.
+Data is pulled over a 2-year window since several questions need a 200-day
+SMA computed up to 20 trading days back (~220 days of history required).
+Q12-Q15 require a mean-reversion backtest (see --bt_* args below).
 
 Usage examples:
   python scan_technicals.py --mode sg --symbols D05 C6L --sort_by score
   python scan_technicals.py --mode us --symbols AAPL MSFT NVDA --sort_by score delta
   python scan_technicals.py --mode us --symbols AAPL MSFT --delta_thres 0 --z_thres 0 --sort_by delta
-  python scan_technicals.py --mode us --symbols AAPL MSFT --sort_by none
+  python scan_technicals.py --mode sg --symbols auto --z_thres -1 --delta_thres -4 --sort_by score --score_thres 10
 
 Notes:
 - --mode selects:
@@ -28,315 +25,68 @@ Notes:
 - --exclude removes the specified symbols from being processed (normalization
   by mode is applied, same as for --symbols).
 - LC/MA20/MA50/MA200/ΔLC%/Z (shown in the output table alongside Score) are
-  computed the same way as in scan_mr_ma20.py: ΔLC% = 100*(LC-MA20)/MA20,
-  Z = (LC-MA20)/SD20 where SD20 is the 20-day sample standard deviation of
-  closes.
-- --delta_thres:
-    * if X <= 0, keep rows where Delta% <= X
-    * if X > 0, keep rows where Delta% > X
-    * or set to 'z' to use per-record rule:
-        - if Z <= 0 then Delta% <= Z
-        - if Z > 0 then Delta% >= Z
-- --z_thres:
-    * if X <= 0, keep rows where Z <= X
-    * if X > 0, keep rows where Z > X.
-- --sort_by:
-    'score' (default): sort rows by total score, descending. Optionally followed by a
-             secondary tiebreaker key ('delta', 'z', or 'atr'; default 'atr'), e.g.
-             '--sort_by score delta' sorts by score first, then ΔLC%. For 'delta'/'z'
-             secondary keys, the tiebreak direction follows the same sign convention as
-             the standalone --sort_by delta/z below (driven by --delta_thres/--z_thres).
-             'atr' has no threshold and always breaks ties most-volatile-first.
-    'delta': sort by ΔLC%; increasing (most negative first) unless delta_thres > 0,
-             in which case decreasing (most positive first).
-    'z':     sort by Z; increasing (most negative first) unless z_thres > 0,
-             in which case decreasing (most positive first).
-    'none': no sorting; keep scan order.
-- The 12 questions (Q1-Q12):
-    1. Relevant broad market index is above its 200-day SMA.
-    2. Relevant broad market index's 200-day SMA is flat or rising.
-    3. Stock's total return is higher than the relevant broad market index's
-       total return in the past 50 days.
-    4. Stock's current price is above its 200-day SMA.
-    5. Stock's 200-day SMA is flat or rising over the past 20 days.
-    6. Stock's 50-day SMA is above its 200-day SMA.
-    7. Stock's current price is above its lowest daily close in the past 20 days.
-    8. Stock's current price is above the most recent confirmed swing-low
-       close in the past 50 days. A swing low is a close that is lower than
-       the 2 closes immediately before it and the 2 closes immediately after
-       it (a 5-bar pivot); if no confirmed swing low exists in the window,
-       this question is answered No.
-    9. Stock has 4 or fewer high-volume down days in the past 20 days, where
-       "high volume" means volume above the average volume of that same
-       20-day window.
-    10. Stock's total down-day volume does not exceed its total up-day volume
-        by more than 50% in the past 20 days.
-    11. Stock has adequate trading liquidity in the past 20 days, approximated
-        from close/volume only (see LIQUIDITY_* constants below).
-    12. Stock's 14-day ATR, expressed as a percent of current price, is at
-        least ATR_PCT_MIN_THRESHOLD (see constant below).
-- Liquidity (Q11) is not directly observable from chart data alone (no
-  bid/ask spread is available from this endpoint), so it is approximated
-  using the only two data series available - close and volume - over the
-  past 20 trading days:
-    * average daily dollar volume (close * volume) >= LIQUIDITY_MIN_DOLLAR_VOL, and
-    * no more than LIQUIDITY_MAX_ILLIQUID_DAYS "illiquid days" in the past 20,
-      where an illiquid day is one with zero volume or volume below 10% of
-      the 20-day average volume (used as a proxy for thin/absent trading
-      and, indirectly, wide bid-ask spreads).
-  These thresholds are reasonable defaults, not externally specified; adjust
-  LIQUIDITY_MIN_DOLLAR_VOL / LIQUIDITY_MAX_ILLIQUID_DAYS below if a different
-  liquidity bar is wanted.
+  computed the same way as in scan_mr_ma20.py.
+- --delta_thres / --z_thres / --sort_by: same semantics as scan_mr_ma20.py.
+- MR backtest args (Q12-Q15):
+    --bt_z_thres    : Z-score trigger threshold. Defaults to --z_thres if provided,
+                      otherwise -2.0. Set independently to override.
+    --bt_delta_thres: ΔLC% trigger threshold. Defaults to --delta_thres (numeric) if
+                      provided, otherwise disabled. If only one of z/delta is given,
+                      the backtest uses that filter alone.
+    --bt_tp_level   : TP target as % of entry price (default 10.0).
+    --bt_max_hold   : maximum hold duration in trading days (default 50).
+    --bt_success_thres: minimum win rate % required to pass Q12 (default 60.0).
+    --bt_window     : years of price history for the backtest (default 2).
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
-import urllib.request
-import urllib.error
-import gzip
-import zlib
-import http.cookiejar as cookielib
-import math
-from collections import Counter
+
 from tqdm import tqdm
 
-# Yahoo endpoints
-YF_HOME = "https://finance.yahoo.com/"
-YF_GET_CRUMB = "https://query1.finance.yahoo.com/v1/test/getcrumb"
-YF_QUOTE_PAGE = "https://finance.yahoo.com/quote/{symbol}?p={symbol}"
-YF_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols}&lang=en-US&region=US"
-YF_SEARCH_URL = "https://query2.finance.yahoo.com/v1/finance/search?q={symbol}&quotesCount=1"
-
-YF_CHART_2Y_URL = (
-    "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?"
-    "interval=1d&range=2y"
+from yf_common import (
+    analyze_mr_bb,
+    atr_last,
+    build_symbol_list,
+    fetch_chart,
+    fmtf,
+    fmt_price,
+    get_name_map,
+    is_finite,
+    load_auto_symbols,
+    mean,
+    std_sample,
+    warm_up_cookies_and_crumb,
 )
 
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-_CJ = cookielib.CookieJar()
-_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_CJ))
-_CRUMB = None  # filled by warm_up_cookies_and_crumb()
-
 # ---------- Q8 swing-low pivot width (bars required on each side) ----------
-SWING_LEFT_BARS = 2
+SWING_LEFT_BARS  = 2
 SWING_RIGHT_BARS = 2
 
-# ---------- Q11 liquidity thresholds (see module docstring) ----------
-LIQUIDITY_MIN_DOLLAR_VOL = 200_000.0
-LIQUIDITY_MAX_ILLIQUID_DAYS = 2
+# ---------- short column headers ("Q1".."Q15") ----------
+QUESTION_LABELS = {n: f"Q{n}" for n in range(1, 16)}
 
-# ---------- Q12 ATR14% minimum threshold ----------
-ATR_PCT_MIN_THRESHOLD = 4.0
-
-# ---------- short column headers ("Q1".."Q12") for each of the 12 questions ----------
-QUESTION_LABELS = {
-    1: "Q1",    # broad index above its 200-SMA
-    2: "Q2",    # broad index's 200-SMA flat or rising
-    3: "Q3",    # stock's 50d return beats the broad index's 50d return
-    4: "Q4",    # stock price above its own 200-SMA
-    5: "Q5",    # stock's 200-SMA flat or rising (past 20d)
-    6: "Q6",    # stock's 50-SMA above its 200-SMA (golden-cross regime)
-    7: "Q7",    # price above its lowest close in the past 20 days
-    8: "Q8",    # price above most recent confirmed swing-low close (50d)
-    9: "Q9",    # 4 or fewer high-volume down days in past 20 days
-    10: "Q10",  # down-day volume doesn't exceed up-day volume by >50% (20d)
-    11: "Q11",  # adequate trading liquidity (past 20 days)
-    12: "Q12",  # ATR14% of price at least ATR_PCT_MIN_THRESHOLD
-}
-
-# ---------- full wording of each of the 12 questions (printed above the table) ----------
+# ---------- full wording of each question (printed above the table) ----------
 QUESTION_TEXT = {
-    1: "Relevant broad market index is above its 200-day SMA.",
-    2: "Relevant broad market index's 200-day SMA is flat or rising.",
-    3: "The stock total return is higher than the relevant broad market index's total return in the past 50 days.",
-    4: "The stock's current price is above its 200-day SMA.",
-    5: "The stock's 200-day SMA is flat or rising over the past 20 days.",
-    6: "The stock's 50-day SMA is above its 200-day SMA.",
-    7: "The stock's current price is above its lowest daily close in the past 20 days.",
-    8: "The stock's current price is above the most recent swing low close in the past 50 days.",
-    9: "The stock has 4 or less high-volume down days in the past 20 days, where high-volume means volume above the 20-day average.",
+    1:  "Relevant broad market index is above its 200-day SMA.",
+    2:  "Relevant broad market index's 200-day SMA is higher than it was 20 days ago.",
+    3:  "The stock's current price is above its 200-day SMA.",
+    4:  "The stock's 200-day SMA is higher than it was 20 days ago.",
+    5:  "The stock's 50-day SMA is above its 200-day SMA.",
+    6:  "The stock's daily closes were above its 200-day SMA in at least 15 out of the past 20 days.",
+    7:  "The stock's current price is above its lowest daily close in the past 20 days.",
+    8:  "The stock's current price is above the most recent swing low close in the past 50 days.",
+    9:  "The stock has 5 or less high-volume down days in the past 20 days, where high-volume means volume above the 20-day average.",
     10: "The stock's total down-day volume does not exceed its total up-day volume by more than 50% in the past 20 days.",
-    11: "The stock has adequate trading liquidity in the past 20 days, with meaningful dollar volume and no signs of wide spreads, thin volume, or frequent illiquid trading days.",
-    12: "The stock's 14-day ATR divided by its current price is at least 4%.",
+    11: "The stock's most recent daily close was in the upper half of its high-low range.",
+    12: "MRB(2Y,50D,10%): The stock has a total of at least 8 past win/fail episodes.",
+    13: "MRB(2Y,50D,10%): The stock has a total of at least 4 past win/fail episodes and at least 70% overall success rate.",
+    14: "MRB(2Y,50D,10%): The stock has a total of at least 4 past win/fail episodes and across all past win episodes, the average holding duration from entry to TP is 20 days or less. Score 0 if there are no past win episodes.",
+    15: "MRB(2Y,50D,10%): The stock has a total of at least 4 past win/fail episodes and across all past failed episodes, the average holding duration from entry to TP, or to the latest available date if TP has not been reached, is 100 days or less. Score 1 if there are no past failed episodes.",
 }
-
-
-def _decompress_and_decode(resp, data: bytes) -> str:
-    enc = (resp.headers.get("Content-Encoding") or "").lower()
-    if enc == "gzip" or (len(data) > 2 and data[:2] == b"\x1f\x8b"):
-        data = gzip.decompress(data)
-    elif enc == "deflate":
-        data = zlib.decompress(data, -zlib.MAX_WBITS)
-    return data.decode("utf-8", errors="replace")
-
-
-def http_get_json(url, timeout=20):
-    if "{crumb}" in url:
-        url = url.format(crumb=_CRUMB or "")
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": UA,
-            "Accept": "application/json,text/plain,*/*",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Accept-Language": "en-US,en;q=0.8",
-            "Connection": "keep-alive",
-            "Referer": "https://finance.yahoo.com/",
-            "Origin": "https://finance.yahoo.com",
-            "Pragma": "no-cache",
-            "Cache-Control": "no-cache",
-        },
-    )
-    with _OPENER.open(req, timeout=timeout) as resp:
-        data = resp.read()
-        text = _decompress_and_decode(resp, data)
-        return json.loads(text)
-
-
-def http_get_text(url, timeout=20):
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": UA,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Accept-Language": "en-US,en;q=0.8",
-            "Connection": "keep-alive",
-            "Referer": "https://finance.yahoo.com/",
-            "Origin": "https://finance.yahoo.com",
-            "Pragma": "no-cache",
-            "Cache-Control": "no-cache",
-        },
-    )
-    with _OPENER.open(req, timeout=timeout) as resp:
-        data = resp.read()
-        return _decompress_and_decode(resp, data)
-
-
-def warm_up_cookies_and_crumb(symbol_for_visit: str):
-    """Make Yahoo happy; try to fetch crumb token."""
-    global _CRUMB
-    try:
-        _ = http_get_text(YF_HOME)
-        time.sleep(0.3)
-        _ = http_get_text(YF_QUOTE_PAGE.format(symbol=symbol_for_visit))
-        time.sleep(0.3)
-        try:
-            crumb_text = http_get_text(YF_GET_CRUMB).strip()
-            if crumb_text and len(crumb_text) < 64:
-                _CRUMB = crumb_text
-        except Exception as e:
-            print(f"[WARN] crumb fetch failed: {e}", file=sys.stderr)
-    except Exception as e:
-        print(f"[WARN] warm-up failed: {e}", file=sys.stderr)
-
-
-def ensure_si(ticker: str) -> str:
-    t = ticker.strip().upper()
-    return t if t.endswith(".SI") else f"{t}.SI"
-
-
-def try_quote_names(symbols):
-    """Fast path: quote endpoint for names."""
-    name_map = {s: s for s in symbols}
-    try:
-        payload = http_get_json(YF_QUOTE_URL.format(symbols=",".join(symbols)))
-        for q in payload.get("quoteResponse", {}).get("result", []):
-            sym = q.get("symbol", "")
-            nm = (
-                q.get("shortName")
-                or q.get("longName")
-                or q.get("displayName")
-                or sym
-            )
-            name_map[sym] = nm
-    except Exception:
-        pass
-    return name_map
-
-
-def try_search_name(symbol):
-    try:
-        p = http_get_json(YF_SEARCH_URL.format(symbol=symbol))
-        quotes = p.get("quotes", []) or []
-        if quotes:
-            return (
-                quotes[0].get("shortname")
-                or quotes[0].get("longname")
-                or symbol
-            )
-    except Exception:
-        pass
-    return symbol
-
-
-def get_name_map(symbols):
-    nm = try_quote_names(symbols)
-    for s in symbols:
-        if not nm.get(s) or nm.get(s) == s:
-            nm[s] = try_search_name(s)
-    return nm
-
-
-def fetch_chart_2y(symbol):
-    """Return dict with arrays: open, high, low, close, volume (may contain None),
-    plus regular_market_price from meta."""
-    payload = http_get_json(YF_CHART_2Y_URL.format(symbol=symbol))
-    result = payload.get("chart", {}).get("result", []) or []
-    if not result:
-        raise ValueError("No chart result")
-    r0 = result[0]
-    meta = r0.get("meta", {}) or {}
-    ind = (r0.get("indicators", {}) or {})
-    quote = (ind.get("quote", [{}]) or [{}])[0]
-    return {
-        "open": quote.get("open") or [],
-        "high": quote.get("high") or [],
-        "low": quote.get("low") or [],
-        "close": quote.get("close") or [],
-        "volume": quote.get("volume") or [],
-        "regular_market_price": meta.get("regularMarketPrice"),
-    }
-
-
-def fmtf(x, w, p):
-    return f"{x:>{w}.{p}f}" if is_finite(x) else f"{'nan':>{w}}"
-
-
-def fmt_price(x, width=6, max_dp=3):
-    if not is_finite(x):
-        return f"{'nan':>{width}}"
-    # Try from max_dp down to 0 dp, pick first that fits
-    for dp in range(max_dp, -1, -1):
-        s = f"{x:.{dp}f}"
-        if len(s) <= width:
-            return s.rjust(width)
-    # Even integer doesn't fit -> keep most significant digits only
-    s = f"{int(x):d}"
-    if len(s) > width:
-        s = s[:width]  # keep most significant digits
-    return s.rjust(width)
-
-
-def mean(vals):
-    return sum(vals) / len(vals) if vals else float("nan")
-
-
-def std_sample(vals):
-    n = len(vals)
-    if n < 2:
-        return float("nan")
-    m = mean(vals)
-    var = sum((x - m) ** 2 for x in vals) / (n - 1)
-    return math.sqrt(var)
-
-
-def is_finite(x):
-    return isinstance(x, (int, float)) and math.isfinite(x)
 
 
 def sma(values, n, end):
@@ -347,31 +97,9 @@ def sma(values, n, end):
     return mean(window)
 
 
-def true_range(high, low, prev_close):
-    if not (is_finite(high) and is_finite(low) and is_finite(prev_close)):
-        return float("nan")
-    return max(high - low, abs(high - prev_close), abs(low - prev_close))
-
-
-def atr_last(highs, lows, closes, n):
-    """ATR(n) as simple average of the last n True Range values."""
-    trs = []
-    m = min(len(highs), len(lows), len(closes))
-    if m < 2:
-        return float("nan")
-    for i in range(1, m):
-        tr = true_range(highs[i], lows[i], closes[i - 1])
-        if is_finite(tr):
-            trs.append(tr)
-    if len(trs) < n:
-        return float("nan")
-    return mean(trs[-n:])
-
-
 def find_swing_low_indices(closes, left=2, right=2):
     """Indices i where closes[i] is strictly lower than the `left` closes
-    immediately before it and the `right` closes immediately after it
-    (a confirmed pivot low)."""
+    immediately before it and the `right` closes immediately after it."""
     n = len(closes)
     idxs = []
     for i in range(left, n - right):
@@ -386,108 +114,121 @@ def find_swing_low_indices(closes, left=2, right=2):
     return idxs
 
 
+
 def build_rows(chart):
     """Chronological list of {close, high, low, volume} for days with a valid close."""
     closes = chart["close"]
-    highs = chart["high"]
-    lows = chart["low"]
-    vols = chart["volume"]
+    highs  = chart["high"]
+    lows   = chart["low"]
+    vols   = chart["volume"]
     rows = []
     for i, c in enumerate(closes):
         if c is None:
             continue
         rows.append(
             {
-                "close": c,
-                "high": highs[i] if i < len(highs) else None,
-                "low": lows[i] if i < len(lows) else None,
-                "volume": vols[i] if i < len(vols) else None,
+                "close":  c,
+                "high":   highs[i] if i < len(highs) else None,
+                "low":    lows[i]  if i < len(lows)  else None,
+                "volume": vols[i]  if i < len(vols)  else None,
             }
         )
     return rows
 
 
 def compute_struct(chart):
-    """Derive all the per-instrument metrics needed across the 12 questions."""
-    rows = build_rows(chart)
+    """Derive all per-instrument metrics needed across the 15 questions."""
+    rows   = build_rows(chart)
     closes = [r["close"] for r in rows]
-    highs = [r["high"] if is_finite(r["high"]) else float("nan") for r in rows]
-    lows = [r["low"] if is_finite(r["low"]) else float("nan") for r in rows]
-    n = len(closes)
+    highs  = [r["high"] if is_finite(r["high"]) else float("nan") for r in rows]
+    lows   = [r["low"]  if is_finite(r["low"])  else float("nan") for r in rows]
+    n      = len(closes)
 
-    rmp = chart.get("regular_market_price")
+    rmp   = chart.get("regular_market_price")
     price = rmp if is_finite(rmp) else (closes[-1] if closes else float("nan"))
 
-    sma20_now = sma(closes, 20, n)
-    sma200_now = sma(closes, 200, n)
+    sma20_now    = sma(closes, 20,  n)
+    sma200_now   = sma(closes, 200, n)
     sma200_20ago = sma(closes, 200, n - 20) if n - 20 >= 0 else float("nan")
-    sma50_now = sma(closes, 50, n)
+    sma50_now    = sma(closes, 50,  n)
 
     sd20 = std_sample(closes[-20:]) if n >= 20 else float("nan")
 
-    if is_finite(sma20_now) and sma20_now != 0:
-        delta_pct = 100.0 * (price - sma20_now) / sma20_now
-    else:
-        delta_pct = float("nan")
+    delta_pct = (
+        100.0 * (price - sma20_now) / sma20_now
+        if is_finite(sma20_now) and sma20_now != 0
+        else float("nan")
+    )
 
-    if is_finite(price) and is_finite(sma20_now) and is_finite(sd20) and sd20 != 0:
-        z = (price - sma20_now) / sd20
-    else:
-        z = float("nan")
+    z = (
+        (price - sma20_now) / sd20
+        if is_finite(price) and is_finite(sma20_now) and is_finite(sd20) and sd20 != 0
+        else float("nan")
+    )
 
-    if n >= 51 and is_finite(closes[-1]) and is_finite(closes[-51]) and closes[-51] != 0:
-        ret50 = closes[-1] / closes[-51] - 1.0
-    else:
-        ret50 = float("nan")
-
-    atr14 = atr_last(highs, lows, closes, 14)
-    atr14_pct = 100.0 * atr14 / price if is_finite(atr14) and is_finite(price) and price != 0 else float("nan")
+    atr14     = atr_last(highs, lows, closes, 14)
+    atr14_pct = (
+        100.0 * atr14 / price
+        if is_finite(atr14) and is_finite(price) and price != 0
+        else float("nan")
+    )
 
     return {
-        "rows": rows,
-        "closes": closes,
-        "highs": highs,
-        "lows": lows,
-        "price": price,
-        "sma20_now": sma20_now,
-        "sma200_now": sma200_now,
+        "rows":         rows,
+        "closes":       closes,
+        "highs":        highs,
+        "lows":         lows,
+        "price":        price,
+        "sma20_now":    sma20_now,
+        "sma200_now":   sma200_now,
         "sma200_20ago": sma200_20ago,
-        "sma50_now": sma50_now,
-        "sd20": sd20,
-        "delta_pct": delta_pct,
-        "z": z,
-        "ret50": ret50,
-        "atr14_pct": atr14_pct,
+        "sma50_now":    sma50_now,
+        "sd20":         sd20,
+        "delta_pct":    delta_pct,
+        "z":            z,
+        "atr14_pct":    atr14_pct,
     }
 
 
-def evaluate_questions(stock, idx):
+def evaluate_questions(stock, idx, mr_result=None, bt_success_thres=0.60):
     q = {}
 
+    # Q1-Q2: broad market index checks
     q[1] = is_finite(idx["price"]) and is_finite(idx["sma200_now"]) and idx["price"] > idx["sma200_now"]
-    q[2] = is_finite(idx["sma200_now"]) and is_finite(idx["sma200_20ago"]) and idx["sma200_now"] >= idx["sma200_20ago"]
-    q[3] = is_finite(stock["ret50"]) and is_finite(idx["ret50"]) and stock["ret50"] > idx["ret50"]
+    q[2] = is_finite(idx["sma200_now"]) and is_finite(idx["sma200_20ago"]) and idx["sma200_now"] > idx["sma200_20ago"]
 
-    q[4] = is_finite(stock["price"]) and is_finite(stock["sma200_now"]) and stock["price"] > stock["sma200_now"]
-    q[5] = is_finite(stock["sma200_now"]) and is_finite(stock["sma200_20ago"]) and stock["sma200_now"] >= stock["sma200_20ago"]
-    q[6] = is_finite(stock["sma50_now"]) and is_finite(stock["sma200_now"]) and stock["sma50_now"] > stock["sma200_now"]
+    # Q3-Q5: stock SMA structure
+    q[3] = is_finite(stock["price"]) and is_finite(stock["sma200_now"]) and stock["price"] > stock["sma200_now"]
+    q[4] = is_finite(stock["sma200_now"]) and is_finite(stock["sma200_20ago"]) and stock["sma200_now"] > stock["sma200_20ago"]
+    q[5] = is_finite(stock["sma50_now"]) and is_finite(stock["sma200_now"]) and stock["sma50_now"] > stock["sma200_now"]
 
     closes = stock["closes"]
-    rows = stock["rows"]
-    price = stock["price"]
-    n = len(closes)
+    rows   = stock["rows"]
+    price  = stock["price"]
+    n      = len(closes)
 
-    # Q7: price above lowest close in the past 20 days.
+    # Q6: closes above their per-day SMA200 in at least 15 of the past 20 days
+    if n >= 220:
+        count_above = 0
+        for i in range(n - 20, n):
+            sma200_i = mean(closes[i - 199:i + 1])
+            if is_finite(closes[i]) and is_finite(sma200_i) and closes[i] > sma200_i:
+                count_above += 1
+        q[6] = count_above >= 15
+    else:
+        q[6] = False
+
+    # Q7: price above lowest close in the past 20 days
     if n >= 20:
-        last20_closes = [c for c in closes[-20:] if is_finite(c)]
-        low20 = min(last20_closes) if last20_closes else float("nan")
-        q[7] = is_finite(price) and is_finite(low20) and price > low20
+        last20 = [c for c in closes[-20:] if is_finite(c)]
+        low20  = min(last20) if last20 else float("nan")
+        q[7]   = is_finite(price) and is_finite(low20) and price > low20
     else:
         q[7] = False
 
-    # Q8: price above most recent confirmed swing-low close in the past 50 days.
+    # Q8: price above most recent confirmed swing-low close in the past 50 days
     if n >= 50 + SWING_RIGHT_BARS:
-        swing_idxs = find_swing_low_indices(closes, left=SWING_LEFT_BARS, right=SWING_RIGHT_BARS)
+        swing_idxs    = find_swing_low_indices(closes, left=SWING_LEFT_BARS, right=SWING_RIGHT_BARS)
         recent_swings = [i for i in swing_idxs if i >= n - 50]
         if recent_swings:
             swing_low_close = closes[max(recent_swings)]
@@ -497,28 +238,27 @@ def evaluate_questions(stock, idx):
     else:
         q[8] = False
 
-    # Q9: 4 or fewer high-volume down days in the past 20 days.
+    # Q9: 5 or fewer high-volume down days in the past 20 days
     if n >= 21:
-        idxs20 = range(n - 20, n)
-        vols20 = [rows[i]["volume"] for i in idxs20 if is_finite(rows[i]["volume"])]
+        idxs20    = range(n - 20, n)
+        vols20    = [rows[i]["volume"] for i in idxs20 if is_finite(rows[i]["volume"])]
         avg_vol20 = mean(vols20) if vols20 else float("nan")
-        hv_down = 0
+        hv_down   = 0
         for i in idxs20:
             prev_c, cur_c, vol = rows[i - 1]["close"], rows[i]["close"], rows[i]["volume"]
             if not (is_finite(prev_c) and is_finite(cur_c) and is_finite(vol) and is_finite(avg_vol20)):
                 continue
             if vol > avg_vol20 and cur_c < prev_c:
                 hv_down += 1
-        q[9] = hv_down <= 4
+        q[9] = hv_down <= 5
     else:
         q[9] = False
 
-    # Q10: down-day volume doesn't exceed up-day volume by more than 50% (past 20 days).
+    # Q10: down-day volume doesn't exceed up-day volume by more than 50% in the past 20 days
     if n >= 21:
-        idxs20 = range(n - 20, n)
         up_vol = down_vol = 0.0
         any_valid = False
-        for i in idxs20:
+        for i in range(n - 20, n):
             prev_c, cur_c, vol = rows[i - 1]["close"], rows[i]["close"], rows[i]["volume"]
             if not (is_finite(prev_c) and is_finite(cur_c) and is_finite(vol)):
                 continue
@@ -531,39 +271,59 @@ def evaluate_questions(stock, idx):
     else:
         q[10] = False
 
-    # Q11: adequate trading liquidity over the past 20 days.
-    if n >= 20:
-        last20_rows = rows[n - 20:n]
-        dollar_vols = [
-            r["close"] * r["volume"]
-            for r in last20_rows
-            if is_finite(r["close"]) and is_finite(r["volume"])
-        ]
-        vols_only = [r["volume"] for r in last20_rows if is_finite(r["volume"])]
-        avg_dollar_vol = mean(dollar_vols) if dollar_vols else float("nan")
-        avg_vol = mean(vols_only) if vols_only else float("nan")
-        illiquid_days = 0
-        for r in last20_rows:
-            v = r["volume"]
-            if not is_finite(v) or v == 0 or (is_finite(avg_vol) and avg_vol > 0 and v < 0.1 * avg_vol):
-                illiquid_days += 1
+    # Q11: most recent close in the upper half of its high-low range
+    n_rows = len(rows)
+    if n_rows >= 1:
+        r  = rows[n_rows - 1]
+        h, lo, c = r["high"], r["low"], r["close"]
         q[11] = (
-            is_finite(avg_dollar_vol)
-            and avg_dollar_vol >= LIQUIDITY_MIN_DOLLAR_VOL
-            and illiquid_days <= LIQUIDITY_MAX_ILLIQUID_DAYS
+            is_finite(h) and is_finite(lo) and is_finite(c)
+            and h > lo and c >= (h + lo) / 2.0
         )
     else:
         q[11] = False
 
-    # Q12: ATR14 as a percent of price is at least ATR_PCT_MIN_THRESHOLD.
-    q[12] = is_finite(stock["atr14_pct"]) and stock["atr14_pct"] >= ATR_PCT_MIN_THRESHOLD
+    # Q12-Q15: MR backtest metrics (require a valid mr_result)
+    if mr_result is not None:
+        episodes = mr_result["episodes"]
+        closed   = [ep for ep in episodes if ep["outcome"] in ("win", "fail")]
+        n_closed = len(closed)
+        n_wins   = sum(1 for ep in closed if ep["outcome"] == "win")
+
+        # Q12: at least 8 closed episodes
+        q[12] = n_closed >= 8
+
+        # Q13: at least 4 closed episodes AND win rate >= bt_success_thres
+        q[13] = n_closed >= 4 and (n_wins / n_closed) >= bt_success_thres
+
+        # Q14: at least 4 closed episodes AND average TP-hit duration <= 20 days (WIN episodes)
+        #   Score 0 if no win episodes exist
+        tp_durs = [
+            ep["tp_dur_td"] for ep in closed
+            if ep["outcome"] == "win" and ep["tp_dur_td"] is not None
+        ]
+        q[14] = n_closed >= 4 and bool(tp_durs) and (sum(tp_durs) / len(tp_durs)) <= 20
+
+        # Q15: at least 4 closed episodes AND average FAIL duration <= 100 days
+        #   duration = eventual_tp_dur_td if TP was eventually hit, else td_elapsed
+        #   Score 1 if no fail episodes exist
+        fail_durs = []
+        for ep in closed:
+            if ep["outcome"] != "fail":
+                continue
+            dur = ep["eventual_tp_dur_td"] if ep["eventual_tp_dur_td"] is not None else ep["td_elapsed"]
+            if dur is not None:
+                fail_durs.append(dur)
+        q[15] = n_closed >= 4 and ((not fail_durs) or (sum(fail_durs) / len(fail_durs)) <= 100)
+    else:
+        q[12] = q[13] = q[14] = q[15] = False
 
     return q
 
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Scan SGX/US tickers (Yahoo) and score 12 technical yes/no questions per symbol."
+        description="Scan SGX/US tickers (Yahoo) and score 15 technical yes/no questions per symbol."
     )
     ap.add_argument(
         "--mode",
@@ -592,23 +352,16 @@ def main():
         help=(
             "'score' (default): sort rows by total score, descending. Optionally followed by a secondary "
             "tiebreaker key ('delta', 'z', or 'atr'; default 'atr'), e.g. '--sort_by score delta' sorts by "
-            "score first, then ΔLC%% to break ties. For 'delta'/'z' secondary keys, tiebreak direction "
-            "follows the corresponding delta_thres/z_thres sign (≤0 or unset → most negative first; >0 → "
-            "most positive first); 'atr' has no threshold and always breaks ties most-volatile-first. "
-            "'delta': sort by ΔLC%%; if delta_thres <= 0 or not specified → increasing (most negative first), "
-            "if delta_thres > 0 → decreasing (most positive first). "
-            "'z': sort by Z; if z_thres <= 0 or not specified → increasing (most negative first), "
-            "if z_thres > 0 → decreasing (most positive first). "
-            "'none': keep scan order."
+            "score first, then ΔLC%% to break ties. "
+            "'delta': sort by ΔLC%%; 'z': sort by Z; 'none': keep scan order."
         ),
     )
     ap.add_argument(
         "--score_thres",
         type=int,
         default=0,
-        help="Minimum score required for a symbol to be shown in the output table (default 0, i.e. no filtering).",
+        help="Minimum score required for a symbol to be shown (default 0, no filtering).",
     )
-    # Accept float (as string) or the string 'z'
     ap.add_argument(
         "--delta_thres",
         default=None,
@@ -622,16 +375,55 @@ def main():
         "--z_thres",
         type=float,
         default=None,
-        help=(
-            "Z filter: if X <= 0, keep rows where Z ≤ X; "
-            "if X > 0, keep rows where Z > X."
-        ),
+        help="Z filter: if X <= 0, keep rows where Z ≤ X; if X > 0, keep rows where Z > X.",
     )
     ap.add_argument(
         "--sleep",
         type=float,
         default=0.3,
         help="Seconds to sleep between requests.",
+    )
+    ap.add_argument(
+        "--bt_z_thres",
+        type=float,
+        default=None,
+        help=(
+            "MR backtest Z-score trigger threshold. "
+            "Defaults to --z_thres if provided, otherwise -2.0."
+        ),
+    )
+    ap.add_argument(
+        "--bt_delta_thres",
+        type=float,
+        default=None,
+        help=(
+            "MR backtest ΔLC%% trigger threshold. "
+            "Defaults to --delta_thres (numeric) if provided, otherwise no delta filter."
+        ),
+    )
+    ap.add_argument(
+        "--bt_tp_level",
+        type=float,
+        default=10.0,
+        help="MR backtest TP target as a percentage of entry price (default 10.0, i.e. 10%%).",
+    )
+    ap.add_argument(
+        "--bt_max_hold",
+        type=int,
+        default=50,
+        help="MR backtest maximum hold duration in trading days (default 50).",
+    )
+    ap.add_argument(
+        "--bt_success_thres",
+        type=float,
+        default=70.0,
+        help="Minimum win rate %% required to pass Q13 (default 70.0).",
+    )
+    ap.add_argument(
+        "--bt_window",
+        type=int,
+        default=2,
+        help="Years of price history to use for the MR backtest (default 2; minimum 2 enforced for technicals).",
     )
     args = ap.parse_args()
 
@@ -648,39 +440,54 @@ def main():
         if sort_secondary not in ("delta", "z", "atr"):
             ap.error(f"--sort_by: invalid secondary key '{sort_secondary}' (choose from delta, z, atr)")
 
-    normalize = ensure_si if args.mode == "sg" else (lambda t: t.strip().upper())
-    broad_index_symbol = "^STI" if args.mode == "sg" else "^GSPC"
+    bt_tp_level_frac    = args.bt_tp_level / 100.0
+    bt_success_thres_frac = args.bt_success_thres / 100.0
+    broad_index_symbol  = "^STI" if args.mode == "sg" else "^GSPC"
+    chart_window        = f"{max(2, args.bt_window)}y"
 
-    # Handle 'auto' mode for symbols: load from all_<mode>_stocks.txt
+    # Effective backtest trigger thresholds:
+    #   bt_z_thres    follows --z_thres if not explicitly set; falls back to -2.0
+    #   bt_delta_thres follows --delta_thres (numeric) if not explicitly set; None = disabled
+    if args.bt_z_thres is not None:
+        eff_bt_z_thres = args.bt_z_thres
+    elif args.z_thres is not None:
+        eff_bt_z_thres = args.z_thres
+    else:
+        eff_bt_z_thres = None  # resolved below
+
+    delta_thres_numeric = (
+        float(args.delta_thres)
+        if args.delta_thres is not None
+        and not (isinstance(args.delta_thres, str) and args.delta_thres.lower() == "z")
+        else None
+    )
+    if args.bt_delta_thres is not None:
+        eff_bt_delta_thres = args.bt_delta_thres
+    elif delta_thres_numeric is not None:
+        eff_bt_delta_thres = delta_thres_numeric
+    else:
+        eff_bt_delta_thres = None
+
+    # If only delta filter is active (no z), pass inf so the z check in analyze_mr_bb is skipped.
+    # If neither is active, fall back to default z trigger of -2.0.
+    if eff_bt_z_thres is not None:
+        bt_z_for_backtest = eff_bt_z_thres
+    elif eff_bt_delta_thres is not None:
+        bt_z_for_backtest = float("inf")   # delta-only mode: z check never triggers a skip
+    else:
+        bt_z_for_backtest = -2.0           # default when no threshold provided at all
+
     if len(args.symbols) == 1 and args.symbols[0].lower() == "auto":
-        auto_file = f"all_{args.mode}_stocks.txt"
         try:
-            with open(auto_file, "r", encoding="utf-8") as f:
-                text = f.read()
-        except FileNotFoundError:
-            print(f"ERROR: Auto symbols file not found: {auto_file}", file=sys.stderr)
-            return
-        except Exception as e:
-            print(f"ERROR: Failed to read auto symbols file {auto_file}: {e}", file=sys.stderr)
-            return
-        input_symbols = text.split()
-        if not input_symbols:
-            print(f"ERROR: Auto symbols file {auto_file} contains no symbols.", file=sys.stderr)
+            input_symbols = load_auto_symbols(args.mode)
+        except (FileNotFoundError, ValueError) as e:
+            print(f"ERROR: {e}", file=sys.stderr)
             return
     else:
         input_symbols = args.symbols
 
-    exclude_normalized = {normalize(s) for s in (args.exclude or [])}
-
-    counts = Counter(normalize(s) for s in input_symbols)
-    duplicates = [f"{sym} (x{n})" for sym, n in counts.items() if n > 1]
-    if duplicates:
-        print("[WARN] Duplicate codes detected (will be de-duplicated): " + ", ".join(duplicates))
-
-    symbols = [
-        sym for sym in dict.fromkeys(normalize(s) for s in input_symbols)
-        if sym not in exclude_normalized
-    ]
+    exclude_symbols = args.exclude or []
+    symbols = build_symbol_list(args.mode, input_symbols, exclude_symbols)
     if not symbols:
         print("ERROR: No symbols left to scan after exclusions.", file=sys.stderr)
         return
@@ -692,7 +499,7 @@ def main():
         pass
 
     try:
-        idx_chart = fetch_chart_2y(broad_index_symbol)
+        idx_chart  = fetch_chart(broad_index_symbol, chart_window)
         idx_struct = compute_struct(idx_chart)
     except Exception as e:
         print(f"ERROR: Failed to fetch broad market index {broad_index_symbol}: {e}", file=sys.stderr)
@@ -703,23 +510,36 @@ def main():
     results = []
     for sym in tqdm(symbols, desc="Scanning", unit="symbol"):
         try:
-            chart = fetch_chart_2y(sym)
+            chart        = fetch_chart(sym, chart_window)
             stock_struct = compute_struct(chart)
-            q = evaluate_questions(stock_struct, idx_struct)
-            score = sum(1 for v in q.values() if v)
+            name         = name_map.get(sym, sym)
+
+            try:
+                mr_result = analyze_mr_bb(
+                    sym, name, chart,
+                    bt_tp_level_frac,
+                    args.bt_max_hold,
+                    z_thres=bt_z_for_backtest,
+                    delta_thres=eff_bt_delta_thres,
+                )
+            except Exception:
+                mr_result = None
+
+            q         = evaluate_questions(stock_struct, idx_struct, mr_result, bt_success_thres_frac)
+            score     = sum(1 for v in q.values() if v)
             disp_code = sym.removesuffix(".SI") if args.mode == "sg" else sym
             results.append(
                 {
                     "Symbol": disp_code,
-                    "Name": name_map.get(sym, sym),
-                    "Q": q,
-                    "Score": score,
-                    "LC": stock_struct["price"],
-                    "MA20": stock_struct["sma20_now"],
-                    "MA50": stock_struct["sma50_now"],
-                    "MA200": stock_struct["sma200_now"],
+                    "Name":   name,
+                    "Q":      q,
+                    "Score":  score,
+                    "LC":     stock_struct["price"],
+                    "MA20":   stock_struct["sma20_now"],
+                    "MA50":   stock_struct["sma50_now"],
+                    "MA200":  stock_struct["sma200_now"],
                     "Delta%": stock_struct["delta_pct"],
-                    "Z": stock_struct["z"],
+                    "Z":      stock_struct["z"],
                     "ATR14%": stock_struct["atr14_pct"],
                 }
             )
@@ -728,14 +548,13 @@ def main():
         finally:
             time.sleep(args.sleep)
 
-    qs = list(range(1, 13))
+    qs        = list(range(1, 16))
     max_score = len(qs)
 
     filtered = [r for r in results if r["Score"] >= args.score_thres]
 
     applied = []
 
-    # Apply optional Delta%/Z filters (same semantics as scan_mr_ma20.py)
     if args.delta_thres is not None:
         if isinstance(args.delta_thres, str) and args.delta_thres.lower() == "z":
             filtered = [
@@ -768,11 +587,6 @@ def main():
 
     # ----- Sorting -----
     if sort_mode == "score":
-        # Primary: Score descending. Tiebreaker: secondary key, direction following the
-        # same delta_thres/z_thres sign convention as standalone --sort_by delta/z below
-        # (negative or unset thres → most negative first; positive thres → most positive
-        # first). 'atr' has no threshold, so it always breaks ties descending (most
-        # volatile first), matching the previous default behavior.
         secondary_field = {"atr": "ATR14%", "delta": "Delta%", "z": "Z"}[sort_secondary]
         if sort_secondary == "atr":
             secondary_descending = True
@@ -792,17 +606,15 @@ def main():
                 v = r.get(secondary_field)
                 return (0, v) if is_finite(v) else (1, float("inf"))
 
-        # Stable two-pass sort: order by secondary key first, then by Score (descending);
-        # ties on Score keep their relative secondary-key order from the first pass.
         filtered.sort(key=secondary_key)
         filtered.sort(key=lambda r: r["Score"], reverse=True)
     elif sort_mode in ("delta", "z"):
         metric_key = "Delta%" if sort_mode == "delta" else "Z"
-        thr_arg = args.delta_thres if sort_mode == "delta" else args.z_thres
+        thr_arg    = args.delta_thres if sort_mode == "delta" else args.z_thres
         descending = False
         if thr_arg is not None and not (isinstance(thr_arg, str) and thr_arg.lower() == "z"):
             if float(thr_arg) > 0:
-                descending = True  # most positive first
+                descending = True
 
         if not descending:
             def sort_key(r):
@@ -815,7 +627,14 @@ def main():
 
         filtered.sort(key=sort_key)
 
-    print(f"\nMode={args.mode} | Broad index={broad_index_symbol}")
+    bt_z_disp    = f"{bt_z_for_backtest:.2f}" if bt_z_for_backtest != float("inf") else "off"
+    bt_delta_disp = f"{eff_bt_delta_thres:.2f}%" if eff_bt_delta_thres is not None else "off"
+    print(
+        f"\nMode={args.mode} | Broad index={broad_index_symbol} | window={chart_window} | "
+        f"BT: z_thres={bt_z_disp}, delta_thres={bt_delta_disp}, "
+        f"tp={args.bt_tp_level}%, max_hold={args.bt_max_hold}d, "
+        f"success_thres={args.bt_success_thres:.0f}%"
+    )
     applied_str = "; ".join(applied) if applied else "no extra filters"
     print(
         f"Scored {len(results)} symbols out of {max_score} applicable questions, "
@@ -823,11 +642,11 @@ def main():
         f"{' and ' + applied_str if applied else ''}.\n"
     )
 
-    for n in qs:
-        print(f"{QUESTION_LABELS[n]}: {QUESTION_TEXT[n]}")
+    for qn in qs:
+        print(f"{QUESTION_LABELS[qn]}: {QUESTION_TEXT[qn]}")
     print()
 
-    q_headers = " ".join(f"{QUESTION_LABELS[n]:>3}" for n in qs)
+    q_headers = " ".join(f"{QUESTION_LABELS[qn]:>3}" for qn in qs)
     header = (
         f"{'Code':<6} {'Name':<32} {q_headers} {'Score':>6} "
         f"{'LC':>6} {'MA20':>6} {'MA50':>6} {'MA200':>6} {'ΔLC%':>6} {'Z':>5} {'ATR%':>5}"
@@ -836,18 +655,18 @@ def main():
     print("-" * len(header))
 
     for r in filtered:
-        q_cells = " ".join(f"{1 if r['Q'][n] else 0:>3}" for n in qs)
+        q_cells = " ".join(f"{1 if r['Q'][qn] else 0:>3}" for qn in qs)
         print(
             f"{(r['Symbol'] or '')[:6]:<6} "
             f"{(r['Name'] or '')[:32]:<32} "
             f"{q_cells} "
             f"{r['Score']:>3}/{max_score} "
-            f"{fmt_price(r['LC'],   6)} "
-            f"{fmt_price(r['MA20'], 6)} "
-            f"{fmt_price(r['MA50'], 6)} "
+            f"{fmt_price(r['LC'],    6)} "
+            f"{fmt_price(r['MA20'],  6)} "
+            f"{fmt_price(r['MA50'],  6)} "
             f"{fmt_price(r['MA200'], 6)} "
             f"{fmtf(r['Delta%'], 6, 2)} "
-            f"{fmtf(r['Z'], 5, 2)} "
+            f"{fmtf(r['Z'],      5, 2)} "
             f"{fmtf(r['ATR14%'], 5, 2)}"
         )
 

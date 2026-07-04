@@ -19,129 +19,21 @@ Output:
 from __future__ import annotations
 
 import argparse
-import gzip
-import http.cookiejar as cookielib
-import json
 import math
-import re
 import sys
 import time
-import urllib.request
-import zlib
-from collections import Counter
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 from tqdm import tqdm
 
-# Yahoo endpoints
-YF_HOME = "https://finance.yahoo.com/"
-YF_QUOTE_PAGE = "https://finance.yahoo.com/quote/{symbol}?p={symbol}"
-
-YF_CHART_1Y_URL = (
-    "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?"
-    "interval=1d&range=1y"
+from yf_common import (
+    build_symbol_list,
+    fetch_chart,
+    is_finite,
+    load_auto_symbols,
+    warm_up_cookies_and_crumb,
 )
-
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-_CJ = cookielib.CookieJar()
-_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_CJ))
-
-
-def _decompress_and_decode(resp, data: bytes) -> str:
-    enc = (resp.headers.get("Content-Encoding") or "").lower()
-    if enc == "gzip" or (len(data) > 2 and data[:2] == b"\x1f\x8b"):
-        data = gzip.decompress(data)
-    elif enc == "deflate":
-        data = zlib.decompress(data, -zlib.MAX_WBITS)
-    return data.decode("utf-8", errors="replace")
-
-
-def http_get_json(url, timeout=20):
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": UA,
-            "Accept": "application/json,text/plain,*/*",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Accept-Language": "en-US,en;q=0.8",
-            "Connection": "keep-alive",
-            "Referer": "https://finance.yahoo.com/",
-            "Origin": "https://finance.yahoo.com",
-            "Pragma": "no-cache",
-            "Cache-Control": "no-cache",
-        },
-    )
-    with _OPENER.open(req, timeout=timeout) as resp:
-        data = resp.read()
-        text = _decompress_and_decode(resp, data)
-        return json.loads(text)
-
-
-def http_get_text(url, timeout=20):
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": UA,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Accept-Language": "en-US,en;q=0.8",
-            "Connection": "keep-alive",
-            "Referer": "https://finance.yahoo.com/",
-            "Origin": "https://finance.yahoo.com",
-            "Pragma": "no-cache",
-            "Cache-Control": "no-cache",
-        },
-    )
-    with _OPENER.open(req, timeout=timeout) as resp:
-        data = resp.read()
-        return _decompress_and_decode(resp, data)
-
-
-def warm_up(symbol_for_visit: str):
-    """Make Yahoo happy (cookies)."""
-    try:
-        _ = http_get_text(YF_HOME)
-        time.sleep(0.3)
-        _ = http_get_text(YF_QUOTE_PAGE.format(symbol=symbol_for_visit))
-        time.sleep(0.3)
-    except Exception:
-        pass
-
-
-def ensure_si(ticker: str) -> str:
-    t = ticker.strip().upper()
-    return t if t.endswith(".SI") else f"{t}.SI"
-
-
-def ensure_cc(ticker: str) -> str:
-    t = ticker.strip().upper()
-    return t if t.endswith("-USD") else f"{t}-USD"
-
-
-def ensure_idx(ticker: str) -> str:
-    t = ticker.strip().upper()
-    if t.startswith("^"):
-        return t
-    if re.search(r"\.[A-Z0-9]+$", t):
-        return t
-    return t
-
-
-def is_finite(x) -> bool:
-    return isinstance(x, (int, float)) and math.isfinite(x)
-
-
-def fetch_price_series_1y(symbol: str):
-    """Return (timestamps, close_list) from Yahoo chart API."""
-    payload = http_get_json(YF_CHART_1Y_URL.format(symbol=symbol))
-    result = payload.get("chart", {}).get("result", []) or []
-    if not result:
-        raise ValueError("No chart result")
-    r0 = result[0]
-    ts = r0.get("timestamp") or []
-    quote = ((r0.get("indicators", {}) or {}).get("quote", [{}]) or [{}])[0]
-    return ts, quote.get("close") or []
 
 
 def pearson_corr(x, y) -> float:
@@ -190,8 +82,8 @@ def plot_corr_matrix(corr, labels):
     fig_w = _clamp(6.0 + 0.45 * n, 7.0, 11.0)
     fig_h = _clamp(5.5 + 0.42 * n, 6.5, 10.5)
 
-    tick_fs = int(_clamp(12 - 0.55 * max(0, n - 5), 6, 12))
-    ann_fs = int(_clamp(11 - 0.65 * max(0, n - 5), 5, 11))
+    tick_fs  = int(_clamp(12 - 0.55 * max(0, n - 5), 6, 12))
+    ann_fs   = int(_clamp(11 - 0.65 * max(0, n - 5), 5, 11))
     title_fs = int(_clamp(14 - 0.25 * max(0, n - 8), 11, 14))
 
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), constrained_layout=True)
@@ -215,8 +107,8 @@ def plot_corr_matrix(corr, labels):
             v = corr[i][j]
             if not is_finite(v):
                 continue
-            rgba = cmap(norm(v))
-            lum = _relative_luminance(rgba)
+            rgba       = cmap(norm(v))
+            lum        = _relative_luminance(rgba)
             text_color = "white" if lum < 0.55 else "black"
             ax.text(
                 j,
@@ -271,62 +163,33 @@ def main():
 
     # Handle 'auto' mode for symbols: load from all_<mode>_stocks.txt
     if args.symbols and len(args.symbols) == 1 and args.symbols[0].lower() == "auto":
-        auto_file = f"all_{args.mode}_stocks.txt"
         try:
-            with open(auto_file, "r", encoding="utf-8") as f:
-                text = f.read()
-        except FileNotFoundError:
-            print(f"ERROR: Auto symbols file not found: {auto_file}", file=sys.stderr)
-            sys.exit(1)
-        except Exception as e:
-            print(f"ERROR: Failed to read auto symbols file {auto_file}: {e}", file=sys.stderr)
-            sys.exit(1)
-        input_symbols = text.split()
-        if not input_symbols:
-            print(f"ERROR: Auto symbols file {auto_file} contains no symbols.", file=sys.stderr)
+            input_symbols = load_auto_symbols(args.mode)
+        except (FileNotFoundError, ValueError) as e:
+            print(f"ERROR: {e}", file=sys.stderr)
             sys.exit(1)
     else:
         input_symbols = args.symbols
 
-    exclude_symbols = args.exclude or []
-
-    if args.mode == "sg":
-        exclude_norm = {ensure_si(s) for s in exclude_symbols}
-        symbols_norm = [ensure_si(s) for s in input_symbols]
-    elif args.mode == "cc":
-        exclude_norm = {ensure_cc(s) for s in exclude_symbols}
-        symbols_norm = [ensure_cc(s) for s in input_symbols]
-    else:  # us
-        exclude_norm = {s.strip().upper() for s in exclude_symbols}
-        symbols_norm = [s.strip().upper() for s in input_symbols]
-
-    counts = Counter(symbols_norm)
-    duplicates = [f"{sym} (x{counts[sym]})" for sym in counts if counts[sym] > 1]
-    if duplicates:
-        print(
-            "[WARN] Duplicate codes detected (will be de-duplicated): "
-            + ", ".join(duplicates),
-            file=sys.stderr,
-        )
-
-    # De-duplicate (first occurrence kept) + apply excludes
-    symbols = [sym for sym in dict.fromkeys(symbols_norm) if sym not in exclude_norm]
+    symbols = build_symbol_list(args.mode, input_symbols, args.exclude or [])
     if len(symbols) < 2:
         print("ERROR: Need at least 2 symbols after exclusions.", file=sys.stderr)
         sys.exit(1)
 
     print("[INFO] Fetching scanning data...")
     try:
-        warm_up(symbols[0])
+        warm_up_cookies_and_crumb(symbols[0])
     except Exception:
         pass
 
-    price_maps = []
-    counts_by_sym = {}
+    price_maps     = []
+    counts_by_sym  = {}
 
     for sym in tqdm(symbols, desc="Scanning", unit="symbol"):
         try:
-            ts, series = fetch_price_series_1y(sym)
+            chart = fetch_chart(sym, "1y")
+            ts    = chart["timestamps"]
+            series = chart["close"]
             mp = {}
             m = min(len(ts), len(series))
             for i in range(m):

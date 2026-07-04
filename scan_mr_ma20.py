@@ -47,221 +47,31 @@ Notes:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
-import urllib.request
-import urllib.error
-import gzip
-import zlib
-import http.cookiejar as cookielib
-import re
-import math
-from collections import Counter
+
 from tqdm import tqdm
 
-# Yahoo endpoints
-YF_HOME = "https://finance.yahoo.com/"
-YF_GET_CRUMB = "https://query1.finance.yahoo.com/v1/test/getcrumb"
-YF_QUOTE_PAGE = "https://finance.yahoo.com/quote/{symbol}?p={symbol}"
-YF_QUOTE_URL = "https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbols}&lang=en-US&region=US"
-YF_QUOTE_URL_ALT = "https://query2.finance.yahoo.com/v7/finance/quote?symbols={symbols}&lang=en-US&region=US"
-YF_SEARCH_URL = "https://query2.finance.yahoo.com/v1/finance/search?q={symbol}&quotesCount=1"
-
-YF_CHART_1Y_URL = (
-    "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?"
-    "interval=1d&range=1y"
+from yf_common import (
+    atr_last,
+    build_symbol_list,
+    fetch_chart,
+    fmtf,
+    fmt_price,
+    get_name_map,
+    is_finite,
+    load_auto_symbols,
+    mean,
+    std_sample,
+    warm_up_cookies_and_crumb,
 )
-
-# quoteSummary URLs (currently not used in output, kept for possible future use)
-YF_SUMMARY_URL_Q2 = (
-    "https://query2.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
-    "?modules=summaryDetail,price&formatted=false&lang=en-US&region=US&ssl=true&corsDomain=finance.yahoo.com"
-)
-YF_SUMMARY_URL_Q1 = (
-    "https://query1.finance.yahoo.com/v10/finance/quoteSummary/{symbol}"
-    "?modules=summaryDetail,price&formatted=false&lang=en-US&region=US&ssl=true&corsDomain=finance.yahoo.com"
-)
-
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-_CJ = cookielib.CookieJar()
-_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_CJ))
-_CRUMB = None  # filled by warm_up_cookies_and_crumb()
-
-
-def _decompress_and_decode(resp, data: bytes) -> str:
-    enc = (resp.headers.get("Content-Encoding") or "").lower()
-    if enc == "gzip" or (len(data) > 2 and data[:2] == b"\x1f\x8b"):
-        data = gzip.decompress(data)
-    elif enc == "deflate":
-        data = zlib.decompress(data, -zlib.MAX_WBITS)
-    return data.decode("utf-8", errors="replace")
-
-
-def http_get_json(url, timeout=20):
-    if "{crumb}" in url:
-        url = url.format(crumb=_CRUMB or "")
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": UA,
-            "Accept": "application/json,text/plain,*/*",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Accept-Language": "en-US,en;q=0.8",
-            "Connection": "keep-alive",
-            "Referer": "https://finance.yahoo.com/",
-            "Origin": "https://finance.yahoo.com",
-            "Pragma": "no-cache",
-            "Cache-Control": "no-cache",
-        },
-    )
-    with _OPENER.open(req, timeout=timeout) as resp:
-        data = resp.read()
-        text = _decompress_and_decode(resp, data)
-        return json.loads(text)
-
-
-def http_get_text(url, timeout=20):
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": UA,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Accept-Language": "en-US,en;q=0.8",
-            "Connection": "keep-alive",
-            "Referer": "https://finance.yahoo.com/",
-            "Origin": "https://finance.yahoo.com",
-            "Pragma": "no-cache",
-            "Cache-Control": "no-cache",
-        },
-    )
-    with _OPENER.open(req, timeout=timeout) as resp:
-        data = resp.read()
-        return _decompress_and_decode(resp, data)
-
-
-def warm_up_cookies_and_crumb(symbol_si_for_visit: str):
-    """Make Yahoo happy; try to fetch crumb token."""
-    global _CRUMB
-    try:
-        _ = http_get_text(YF_HOME)
-        time.sleep(0.3)
-        _ = http_get_text(YF_QUOTE_PAGE.format(symbol=symbol_si_for_visit))
-        time.sleep(0.3)
-        try:
-            crumb_text = http_get_text(YF_GET_CRUMB).strip()
-            if crumb_text and len(crumb_text) < 64:
-                _CRUMB = crumb_text
-        except Exception as e:
-            print(f"[WARN] crumb fetch failed: {e}", file=sys.stderr)
-    except Exception as e:
-        print(f"[WARN] warm-up failed: {e}", file=sys.stderr)
-
-
-def ensure_si(ticker: str) -> str:
-    t = ticker.strip().upper()
-    return t if t.endswith(".SI") else f"{t}.SI"
-
-
-def ensure_cc(ticker: str) -> str:
-    t = ticker.strip().upper()
-    return t if t.endswith("-USD") else f"{t}-USD"
-
-
-def ensure_idx(ticker: str) -> str:
-    t = ticker.strip().upper()
-    if t.startswith("^"):
-        return t
-    if re.search(r"\.[A-Z0-9]+$", t):
-        return t
-    return t
-
-
-def try_quote_names(symbols_si):
-    """Fast path: quote endpoint for names."""
-    name_map = {s: s for s in symbols_si}
-    try:
-        payload = http_get_json(YF_QUOTE_URL.format(symbols=",".join(symbols_si)))
-        for q in payload.get("quoteResponse", {}).get("result", []):
-            sym = q.get("symbol", "")
-            nm = (
-                q.get("shortName")
-                or q.get("longName")
-                or q.get("displayName")
-                or sym
-            )
-            name_map[sym] = nm
-    except Exception:
-        # keep silent to match original behavior
-        pass
-    return name_map
-
-
-def try_search_name(symbol_si):
-    try:
-        p = http_get_json(YF_SEARCH_URL.format(symbol=symbol_si))
-        quotes = p.get("quotes", []) or []
-        if quotes:
-            return (
-                quotes[0].get("shortname")
-                or quotes[0].get("longname")
-                or symbol_si
-            )
-    except Exception:
-        pass
-    return symbol_si
-
-
-def get_name_map(symbols_si):
-    nm = try_quote_names(symbols_si)
-    for s in symbols_si:
-        if not nm.get(s) or nm.get(s) == s:
-            nm[s] = try_search_name(s)
-    return nm
-
-
-def fetch_chart_1y(symbol_si):
-    """Return dict with arrays: open, high, low, close, volume (may contain None),
-    plus regular_market_price and chart_previous_close from meta."""
-    payload = http_get_json(YF_CHART_1Y_URL.format(symbol=symbol_si))
-    result = payload.get("chart", {}).get("result", []) or []
-    if not result:
-        raise ValueError("No chart result")
-    r0 = result[0]
-    meta = r0.get("meta", {}) or {}
-    ind = (r0.get("indicators", {}) or {})
-    quote = (ind.get("quote", [{}]) or [{}])[0]
-    return {
-        "open": quote.get("open") or [],
-        "high": quote.get("high") or [],
-        "low": quote.get("low") or [],
-        "close": quote.get("close") or [],
-        "volume": quote.get("volume") or [],
-        "regular_market_price": meta.get("regularMarketPrice"),
-        "chart_previous_close": meta.get("chartPreviousClose"),
-    }
-
-
-def mean(vals):
-    return sum(vals) / len(vals) if vals else float("nan")
-
-
-def std_sample(vals):
-    n = len(vals)
-    if n < 2:
-        return float("nan")
-    m = mean(vals)
-    var = sum((x - m) ** 2 for x in vals) / (n - 1)
-    return math.sqrt(var)
 
 
 def ma_last(closes_valid, n):
     """Return last simple moving average value over window n (or NaN if insufficient)."""
     if len(closes_valid) < n:
         return float("nan")
-    window = closes_valid[-n:]
-    return mean(window)
+    return mean(closes_valid[-n:])
 
 
 def latest_non_none(arr):
@@ -271,72 +81,13 @@ def latest_non_none(arr):
     return float("nan")
 
 
-def is_finite(x):
-    return isinstance(x, (int, float)) and math.isfinite(x)
-
-
-# ---------- TR / ATR (simple average of TR over past N days) ----------
-def true_range(high, low, prev_close):
-    """
-    True Range for one day:
-      TR = max(high-low, abs(high-prev_close), abs(low-prev_close))
-    Returns NaN if inputs are not finite.
-    """
-    if not (is_finite(high) and is_finite(low) and is_finite(prev_close)):
-        return float("nan")
-    return max(high - low, abs(high - prev_close), abs(low - prev_close))
-
-
-def atr_last_from_ohlc(highs, lows, closes, n):
-    """
-    Compute ATR(N) as simple average of the last N True Range values.
-    Requires at least N valid TR values (which requires prev_close).
-    """
-    trs = []
-    m = min(len(highs), len(lows), len(closes))
-    if m < 2:
-        return float("nan")
-
-    for i in range(1, m):
-        hi = highs[i]
-        lo = lows[i]
-        prev_c = closes[i - 1]
-        tr = true_range(hi, lo, prev_c)
-        if is_finite(tr):
-            trs.append(tr)
-
-    if len(trs) < n:
-        return float("nan")
-    return mean(trs[-n:])
-
-
-# ---------- compact one-row table ----------
-def fmtf(x, w, p):
-    return f"{x:>{w}.{p}f}" if is_finite(x) else f"{'nan':>{w}}"
-
-
-def fmt_price(x, width=6, max_dp=3):
-    if not is_finite(x):
-        return f"{'nan':>{width}}"
-    # Try from max_dp down to 0 dp, pick first that fits
-    for dp in range(max_dp, -1, -1):
-        s = f"{x:.{dp}f}"
-        if len(s) <= width:
-            return s.rjust(width)
-    # Even integer doesn't fit -> keep most significant digits only
-    s = f"{int(x):d}"
-    if len(s) > width:
-        s = s[:width]  # keep most significant digits
-    return s.rjust(width)
-
-
 def ma_stack_str(r):
     """
     Return a string like '(LC > MA20 > MA200)',
     ordering LC, MA20, MA200 by actual numeric value (descending).
     """
-    lc = r.get("LC")
-    ma20 = r.get("MA20")
+    lc    = r.get("LC")
+    ma20  = r.get("MA20")
     ma200 = r.get("MA200")
 
     items = [
@@ -437,55 +188,16 @@ def main():
 
     # Handle 'auto' mode for symbols: load from all_<mode>_stocks.txt
     if args.symbols and len(args.symbols) == 1 and args.symbols[0].lower() == "auto":
-        auto_file = f"all_{args.mode}_stocks.txt"
         try:
-            with open(auto_file, "r", encoding="utf-8") as f:
-                text = f.read()
-        except FileNotFoundError:
-            print(
-                f"ERROR: Auto symbols file not found: {auto_file}",
-                file=sys.stderr,
-            )
-            return
-        except Exception as e:
-            print(
-                f"ERROR: Failed to read auto symbols file {auto_file}: {e}",
-                file=sys.stderr,
-            )
-            return
-        input_symbols = text.split()
-        if not input_symbols:
-            print(
-                f"ERROR: Auto symbols file {auto_file} contains no symbols.",
-                file=sys.stderr,
-            )
+            input_symbols = load_auto_symbols(args.mode)
+        except (FileNotFoundError, ValueError) as e:
+            print(f"ERROR: {e}", file=sys.stderr)
             return
     else:
         input_symbols = args.symbols
 
     exclude_symbols = args.exclude if args.exclude else []
-
-    if args.mode == "sg":
-        exclude_normalized = {ensure_si(s) for s in exclude_symbols}
-        normalized_symbols = [ensure_si(s) for s in input_symbols]
-    elif args.mode == "cc":
-        exclude_normalized = {ensure_cc(s) for s in exclude_symbols}
-        normalized_symbols = [ensure_cc(s) for s in input_symbols]
-    else:  # 'us'
-        exclude_normalized = {s.strip().upper() for s in exclude_symbols}
-        normalized_symbols = [s.strip().upper() for s in input_symbols]
-
-    counts = Counter(normalized_symbols)
-    duplicates = [f"{sym} (x{counts[sym]})" for sym in counts if counts[sym] > 1]
-    if duplicates:
-        print(
-            "[WARN] Duplicate codes detected (will be de-duplicated): "
-            + ", ".join(duplicates)
-        )
-
-    symbols_si = [
-        sym for sym in dict.fromkeys(normalized_symbols) if sym not in exclude_normalized
-    ]
+    symbols_si = build_symbol_list(args.mode, input_symbols, exclude_symbols)
 
     print("[INFO] Fetching scanning data...")
     try:
@@ -499,20 +211,20 @@ def main():
 
     for sym in tqdm(symbols_si, desc="Scanning", unit="symbol"):
         try:
-            chart = fetch_chart_1y(sym)
+            chart = fetch_chart(sym, "1y")
             closes = chart["close"]
-            highs = chart["high"]
-            lows = chart["low"]
+            highs  = chart["high"]
+            lows   = chart["low"]
 
             closes_valid = [c for c in closes if c is not None]
             if len(closes_valid) == 0:
                 raise ValueError("No close prices in 1Y history")
 
-            ma20 = ma_last(closes_valid, 20)
-            ma50 = ma_last(closes_valid, 50)
+            ma20  = ma_last(closes_valid, 20)
+            ma50  = ma_last(closes_valid, 50)
             ma200 = ma_last(closes_valid, 200)
 
-            rmp = chart.get("regular_market_price")
+            rmp    = chart.get("regular_market_price")
             latest = rmp if is_finite(rmp) else latest_non_none(closes)
 
             sd20 = (
@@ -539,7 +251,7 @@ def main():
             )
 
             # ATR14 (simple average of last 14 TR values)
-            atr14 = atr_last_from_ohlc(highs, lows, closes, 14)
+            atr14 = atr_last(highs, lows, closes, 14)
 
             # ATR% = ATR14 / LC * 100
             atr_pct = (
@@ -560,16 +272,16 @@ def main():
             results.append(
                 {
                     "Symbol": disp_code,
-                    "Name": name_map.get(sym, sym),
-                    "LC": latest,
-                    "MA20": ma20,
-                    "MA50": ma50,
-                    "MA200": ma200,
+                    "Name":   name_map.get(sym, sym),
+                    "LC":     latest,
+                    "MA20":   ma20,
+                    "MA50":   ma50,
+                    "MA200":  ma200,
                     "Delta%": delta_pct,
-                    "SD20": sd20,
-                    "Z": z,
-                    "ATR14": atr14,
-                    "ATR%": atr_pct,
+                    "SD20":   sd20,
+                    "Z":      z,
+                    "ATR14":  atr14,
+                    "ATR%":   atr_pct,
                 }
             )
         except Exception as e:

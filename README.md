@@ -17,14 +17,17 @@ No other dependencies — all network access uses the standard library (`urllib`
 ```
 stocks_trading/
 ├── scan_mr_ma20.py        # MA/Z-score scanner: spot MR entry candidates
-├── scan_mr_backtest.py     # BB(20,2) lower-band MR backtester
-├── scan_corr.py            # Pearson correlation heatmap on daily log returns
-├── scan_technicals.py      # multi-question true/false technical scorer
-├── dedupe_symbols.py       # Utility: remove duplicates from a symbol list file
-├── extract_symbols.py      # Utility: extract symbols from column A of a CSV
-├── all_sg_stocks.txt       # SGX tickers (used with --symbols auto --mode sg)
-├── all_us_stocks.txt       # US tickers  (used with --symbols auto --mode us)
-└── all_cc_stocks.txt       # Crypto tickers (used with --symbols auto --mode cc)
+├── scan_mr_backtest.py    # BB(20,2) lower-band MR backtester
+├── scan_corr.py           # Pearson correlation heatmap on daily log returns
+├── scan_technicals.py     # multi-question technical scorer (15 yes/no questions)
+├── yf_common.py           # shared data-fetching, math, and backtest core
+├── symbols/
+│   ├── all_sg_stocks.txt  # SGX tickers  (used with --symbols auto --mode sg)
+│   ├── all_us_stocks.txt  # US tickers   (used with --symbols auto --mode us)
+│   └── all_cc_stocks.txt  # Crypto tickers (used with --symbols auto --mode cc)
+└── utils/
+    ├── dedupe_symbols.py  # remove duplicates from a symbol list file
+    └── extract_symbols.py # extract symbols from column A of a CSV
 ```
 
 Most scripts share the same `--mode` values (see each script's `--help` for which modes it supports):
@@ -35,7 +38,7 @@ Most scripts share the same `--mode` values (see each script's `--help` for whic
 | `us` | US stocks | `AAPL`, `NVDA` — used as-is |
 | `cc` | Crypto | `BTC`, `ETH` — `-USD` appended automatically |
 
-`--symbols` takes space-separated tickers, or `auto` to load from the matching `all_<mode>_stocks.txt`.
+`--symbols` takes space-separated tickers, or `auto` to load from the matching `all_<mode>_stocks.txt` in `symbols/`.
 
 ## Scripts
 
@@ -54,23 +57,13 @@ Most scripts share the same `--mode` values (see each script's `--help` for whic
   python scan_corr.py --mode us --symbols AAPL MSFT NVDA TSLA
   ```
 
-- **scan_technicals.py** — Answers a series of yes/no technical questions per symbol (trend, relative strength, volume, liquidity, volatility) and reports a total score. Supports `--mode sg`/`us` only. See the module docstring in the script for the full, current list of questions.
+- **scan_technicals.py** — Answers 15 yes/no technical questions per symbol covering trend, momentum, volume, and MR backtest quality, then reports a total score. Supports `--mode sg`/`us`. The MR backtest questions (Q12–Q15) use the same backtesting core as `scan_mr_backtest.py` and are controlled via `--bt_*` flags.
   ```bash
-  python scan_technicals.py --mode us --symbols AAPL MSFT NVDA --sort_by score
-  ```
-
-- **dedupe_symbols.py** — Removes duplicates from a whitespace-separated symbol list file.
-  ```bash
-  python dedupe_symbols.py --input all_sg_stocks.txt
-  ```
-
-- **extract_symbols.py** — Extracts symbols from column A of a CSV.
-  ```bash
-  python extract_symbols.py --input my_watchlist.csv
+  python scan_technicals.py --mode sg --symbols auto --z_thres -1 --delta_thres -4 --sort_by score --score_thres 10
   ```
 
 Run any script with `--help` for the full list of flags and defaults.
 
 ## Symbol list files
 
-The `all_<mode>_stocks.txt` files are whitespace-separated ticker lists consumed by `--symbols auto`. Edit them directly, then run `dedupe_symbols.py` if needed.
+The `symbols/all_<mode>_stocks.txt` files are whitespace-separated ticker lists consumed by `--symbols auto`. Edit them directly, then run `utils/dedupe_symbols.py` if needed.
