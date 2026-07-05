@@ -6,7 +6,7 @@ questions per symbol, then report a total score per symbol.
 
 Data is pulled over a 2-year window since several questions need a 200-day
 SMA computed up to 20 trading days back (~220 days of history required).
-Q12-Q15 require a mean-reversion backtest (see --bt_* args below).
+Q11-Q15 require a mean-reversion backtest (see --bt_* args below).
 
 Usage examples:
   python scan_technicals.py --mode sg --symbols D05 C6L --sort_by score
@@ -27,7 +27,7 @@ Notes:
 - LC/MA20/MA50/MA200/ΔLC%/Z (shown in the output table alongside Score) are
   computed the same way as in scan_mr_ma20.py.
 - --delta_thres / --z_thres / --sort_by: same semantics as scan_mr_ma20.py.
-- MR backtest args (Q12-Q15):
+- MR backtest args (Q11-Q15):
     --bt_z_thres    : Z-score trigger threshold. Defaults to --z_thres if provided,
                       otherwise -2.0. Set independently to override.
     --bt_delta_thres: ΔLC% trigger threshold. Defaults to --delta_thres (numeric) if
@@ -35,7 +35,7 @@ Notes:
                       the backtest uses that filter alone.
     --bt_tp_level   : TP target as % of entry price (default 10.0).
     --bt_max_hold   : maximum hold duration in trading days (default 50).
-    --bt_success_thres: minimum win rate % required to pass Q12 (default 60.0).
+    --bt_success_thres: minimum win rate % required to pass Q12 (default 70.0).
     --bt_window     : years of price history for the backtest (default 2).
 """
 
@@ -75,17 +75,17 @@ QUESTION_TEXT = {
     2:  "Relevant broad market index's 200-day SMA is higher than it was 20 days ago.",
     3:  "The stock's current price is above its 200-day SMA.",
     4:  "The stock's 200-day SMA is higher than it was 20 days ago.",
-    5:  "The stock's 50-day SMA is above its 200-day SMA.",
-    6:  "The stock's daily closes were above its 200-day SMA in at least 15 out of the past 20 days.",
+    5:  "The stock's current price is above its 50-day SMA.",
+    6:  "The stock's 50-day SMA is above its 200-day SMA.",
     7:  "The stock's current price is above its lowest daily close in the past 20 days.",
     8:  "The stock's current price is above the most recent swing low close in the past 50 days.",
     9:  "The stock has 5 or less high-volume down days in the past 20 days, where high-volume means volume above the 20-day average.",
     10: "The stock's total down-day volume does not exceed its total up-day volume by more than 50% in the past 20 days.",
-    11: "The stock's most recent daily close was in the upper half of its high-low range.",
-    12: "MRB(2Y,50D,10%): The stock has a total of at least 8 past win/fail episodes.",
-    13: "MRB(2Y,50D,10%): The stock has a total of at least 4 past win/fail episodes and at least 70% overall success rate.",
-    14: "MRB(2Y,50D,10%): The stock has a total of at least 4 past win/fail episodes and across all past win episodes, the average holding duration from entry to TP is 20 days or less. Score 0 if there are no past win episodes.",
-    15: "MRB(2Y,50D,10%): The stock has a total of at least 4 past win/fail episodes and across all past failed episodes, the average holding duration from entry to TP, or to the latest available date if TP has not been reached, is 100 days or less. Score 1 if there are no past failed episodes.",
+    11: "MRB(2Y,50D,10%): The stock has a total of at least 8 past episodes.",
+    12: "MRB(2Y,50D,10%): The stock has a total of at least 4 past episodes and at least 70% overall success rate.",
+    13: "MRB(2Y,50D,10%): The stock has a total of at least 4 past episodes and across all past win episodes, the average entry-to-TP holding duration is 20 days or less. Score 0 if there are no past win episodes.",
+    14: "MRB(2Y,50D,10%): The stock has a total of at least 4 past episodes and across all past failed episodes, the average entry-to-TP holding duration, or to the latest available date if TP has not been reached, is 100 days or less. Score 1 if there are no past failed episodes.",
+    15: "MRB(2Y,50D,10%): The stock has a total of at least 4 past episodes and the sum of entry-to-TP percentage increase across all past episodes that eventually hit TP is greater than the sum of entry-to-low percentage decrease across all past episodes, including episodes that have not reached TP. Score 0 if no past episodes eventually hit TP.",
 }
 
 
@@ -190,33 +190,27 @@ def compute_struct(chart):
     }
 
 
-def evaluate_questions(stock, idx, mr_result=None, bt_success_thres=0.60):
+def evaluate_questions(stock, idx, mr_result=None, bt_success_thres=0.70):
     q = {}
 
     # Q1-Q2: broad market index checks
     q[1] = is_finite(idx["price"]) and is_finite(idx["sma200_now"]) and idx["price"] > idx["sma200_now"]
     q[2] = is_finite(idx["sma200_now"]) and is_finite(idx["sma200_20ago"]) and idx["sma200_now"] > idx["sma200_20ago"]
 
-    # Q3-Q5: stock SMA structure
+    # Q3-Q4: stock SMA200 structure
     q[3] = is_finite(stock["price"]) and is_finite(stock["sma200_now"]) and stock["price"] > stock["sma200_now"]
     q[4] = is_finite(stock["sma200_now"]) and is_finite(stock["sma200_20ago"]) and stock["sma200_now"] > stock["sma200_20ago"]
-    q[5] = is_finite(stock["sma50_now"]) and is_finite(stock["sma200_now"]) and stock["sma50_now"] > stock["sma200_now"]
 
     closes = stock["closes"]
     rows   = stock["rows"]
     price  = stock["price"]
     n      = len(closes)
 
-    # Q6: closes above their per-day SMA200 in at least 15 of the past 20 days
-    if n >= 220:
-        count_above = 0
-        for i in range(n - 20, n):
-            sma200_i = mean(closes[i - 199:i + 1])
-            if is_finite(closes[i]) and is_finite(sma200_i) and closes[i] > sma200_i:
-                count_above += 1
-        q[6] = count_above >= 15
-    else:
-        q[6] = False
+    # Q5: price above 50-day SMA
+    q[5] = is_finite(price) and is_finite(stock["sma50_now"]) and price > stock["sma50_now"]
+
+    # Q6: 50-day SMA above 200-day SMA
+    q[6] = is_finite(stock["sma50_now"]) and is_finite(stock["sma200_now"]) and stock["sma50_now"] > stock["sma200_now"]
 
     # Q7: price above lowest close in the past 20 days
     if n >= 20:
@@ -271,40 +265,29 @@ def evaluate_questions(stock, idx, mr_result=None, bt_success_thres=0.60):
     else:
         q[10] = False
 
-    # Q11: most recent close in the upper half of its high-low range
-    n_rows = len(rows)
-    if n_rows >= 1:
-        r  = rows[n_rows - 1]
-        h, lo, c = r["high"], r["low"], r["close"]
-        q[11] = (
-            is_finite(h) and is_finite(lo) and is_finite(c)
-            and h > lo and c >= (h + lo) / 2.0
-        )
-    else:
-        q[11] = False
-
-    # Q12-Q15: MR backtest metrics (require a valid mr_result)
+    # Q11-Q15: MR backtest metrics (require a valid mr_result).
+    # "Past episode" = closed episodes only (outcome win/fail); open episodes excluded.
     if mr_result is not None:
         episodes = mr_result["episodes"]
         closed   = [ep for ep in episodes if ep["outcome"] in ("win", "fail")]
         n_closed = len(closed)
         n_wins   = sum(1 for ep in closed if ep["outcome"] == "win")
 
-        # Q12: at least 8 closed episodes
-        q[12] = n_closed >= 8
+        # Q11: at least 8 past episodes
+        q[11] = n_closed >= 8
 
-        # Q13: at least 4 closed episodes AND win rate >= bt_success_thres
-        q[13] = n_closed >= 4 and (n_wins / n_closed) >= bt_success_thres
+        # Q12: at least 4 past episodes AND win rate >= bt_success_thres
+        q[12] = n_closed >= 4 and (n_wins / n_closed) >= bt_success_thres
 
-        # Q14: at least 4 closed episodes AND average TP-hit duration <= 20 days (WIN episodes)
+        # Q13: at least 4 past episodes AND average TP-hit duration <= 20 days (WIN episodes)
         #   Score 0 if no win episodes exist
         tp_durs = [
             ep["tp_dur_td"] for ep in closed
             if ep["outcome"] == "win" and ep["tp_dur_td"] is not None
         ]
-        q[14] = n_closed >= 4 and bool(tp_durs) and (sum(tp_durs) / len(tp_durs)) <= 20
+        q[13] = n_closed >= 4 and bool(tp_durs) and (sum(tp_durs) / len(tp_durs)) <= 20
 
-        # Q15: at least 4 closed episodes AND average FAIL duration <= 100 days
+        # Q14: at least 4 past episodes AND average FAIL duration <= 100 days
         #   duration = eventual_tp_dur_td if TP was eventually hit, else td_elapsed
         #   Score 1 if no fail episodes exist
         fail_durs = []
@@ -314,9 +297,27 @@ def evaluate_questions(stock, idx, mr_result=None, bt_success_thres=0.60):
             dur = ep["eventual_tp_dur_td"] if ep["eventual_tp_dur_td"] is not None else ep["td_elapsed"]
             if dur is not None:
                 fail_durs.append(dur)
-        q[15] = n_closed >= 4 and ((not fail_durs) or (sum(fail_durs) / len(fail_durs)) <= 100)
+        q[14] = n_closed >= 4 and ((not fail_durs) or (sum(fail_durs) / len(fail_durs)) <= 100)
+
+        # Q15: at least 4 past episodes AND sum(entry-to-TP % gain, TP-hit episodes only)
+        #   > sum(entry-to-low % decrease, all closed episodes). Score 0 if no episode
+        #   ever hit TP (win, or fail that eventually hit TP).
+        tp_gain_pct_sum = 0.0
+        low_decr_pct_sum = 0.0
+        any_hit_tp = False
+        for ep in closed:
+            entry_price = ep["entry_price"]
+            if not (is_finite(entry_price) and entry_price != 0):
+                continue
+            hit_tp = ep["outcome"] == "win" or ep.get("eventual_tp_date") is not None
+            if hit_tp:
+                any_hit_tp = True
+                tp_gain_pct_sum += 100.0 * (ep["tp_price"] - entry_price) / entry_price
+            if is_finite(ep.get("min_low")):
+                low_decr_pct_sum += 100.0 * (entry_price - ep["min_low"]) / entry_price
+        q[15] = n_closed >= 4 and any_hit_tp and (tp_gain_pct_sum > low_decr_pct_sum)
     else:
-        q[12] = q[13] = q[14] = q[15] = False
+        q[11] = q[12] = q[13] = q[14] = q[15] = False
 
     return q
 
@@ -417,7 +418,7 @@ def main():
         "--bt_success_thres",
         type=float,
         default=70.0,
-        help="Minimum win rate %% required to pass Q13 (default 70.0).",
+        help="Minimum win rate %% required to pass Q12 (default 70.0).",
     )
     ap.add_argument(
         "--bt_window",

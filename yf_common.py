@@ -470,7 +470,6 @@ def analyze_mr_bb(
             outcome      = "fail"
             tp_dur       = None
             fail_date    = ts_to_date(valid_days[search_end - 1][1])
-            scan_end_low = search_end
             i_next       = search_end
 
             eventual_tp_k = None
@@ -484,6 +483,9 @@ def analyze_mr_bb(
             eventual_tp_dur = (
                 eventual_tp_k - entry_i if eventual_tp_k is not None else None
             )
+            # Low/high scan window: entry_date -> eventual TP date if TP was
+            # eventually hit, otherwise entry_date -> latest available date.
+            scan_end_low = eventual_tp_k + 1 if eventual_tp_k is not None else m
 
         scan_lows  = [valid_days[k][4] for k in range(entry_i, scan_end_low)]
         min_low    = min(scan_lows) if scan_lows else entry_price
