@@ -1,12 +1,12 @@
 """
 scan_technicals.py
 
-Scan SGX or US tickers on Yahoo and answer 15 yes/no (1/0) technical
+Scan SGX or US tickers on Yahoo and answer 20 yes/no (1/0) technical
 questions per symbol, then report a total score per symbol.
 
 Data is pulled over a 2-year window since several questions need a 200-day
-SMA computed up to 20 trading days back (~220 days of history required).
-Q11-Q15 require a mean-reversion backtest (see --bt_* args below).
+SMA computed up to 50 trading days back (~250 days of history required for Q7).
+Q15-Q20 require a mean-reversion backtest (see --bt_* args below).
 
 Usage examples:
   python scan_technicals.py --mode sg --symbols D05 C6L --sort_by score
@@ -27,7 +27,7 @@ Notes:
 - LC/MA20/MA50/MA200/ΔLC%/Z (shown in the output table alongside Score) are
   computed the same way as in scan_mr_ma20.py.
 - --delta_thres / --z_thres / --sort_by: same semantics as scan_mr_ma20.py.
-- MR backtest args (Q11-Q15):
+- MR backtest args (Q15-Q20):
     --bt_z_thres    : Z-score trigger threshold. Defaults to --z_thres if provided,
                       otherwise -2.0. Set independently to override.
     --bt_delta_thres: ΔLC% trigger threshold. Defaults to --delta_thres (numeric) if
@@ -62,12 +62,12 @@ from yf_common import (
     warm_up_cookies_and_crumb,
 )
 
-# ---------- Q8 swing-low pivot width (bars required on each side) ----------
+# ---------- Q10 swing-low pivot width (bars required on each side) ----------
 SWING_LEFT_BARS  = 2
 SWING_RIGHT_BARS = 2
 
-# ---------- short column headers ("Q1".."Q15") ----------
-QUESTION_LABELS = {n: f"Q{n}" for n in range(1, 16)}
+# ---------- short column headers ("Q1".."Q20") ----------
+QUESTION_LABELS = {n: f"Q{n}" for n in range(1, 21)}
 
 # ---------- full wording of each question (printed above the table) ----------
 QUESTION_TEXT = {
@@ -75,17 +75,22 @@ QUESTION_TEXT = {
     2:  "Relevant broad market index's 200-day SMA is higher than it was 20 days ago.",
     3:  "The stock's current price is above its 200-day SMA.",
     4:  "The stock's 200-day SMA is higher than it was 20 days ago.",
-    5:  "The stock's current price is above its 50-day SMA.",
-    6:  "The stock's 50-day SMA is above its 200-day SMA.",
-    7:  "The stock's current price is above its lowest daily close in the past 20 days.",
-    8:  "The stock's current price is above the most recent swing low close in the past 50 days.",
-    9:  "The stock has 5 or less high-volume down days in the past 20 days, where high-volume means volume above the 20-day average.",
-    10: "The stock's total down-day volume does not exceed its total up-day volume by more than 50% in the past 20 days.",
-    11: "MRB(2Y,50D,10%): The stock has a total of at least 8 past episodes.",
-    12: "MRB(2Y,50D,10%): The stock has a total of at least 4 past episodes and at least 70% overall success rate.",
-    13: "MRB(2Y,50D,10%): The stock has a total of at least 4 past episodes and across all past win episodes, the average entry-to-TP holding duration is 20 days or less. Score 0 if there are no past win episodes.",
-    14: "MRB(2Y,50D,10%): The stock has a total of at least 4 past episodes and across all past failed episodes, the average entry-to-TP holding duration, or to the latest available date if TP has not been reached, is 100 days or less. Score 1 if there are no past failed episodes.",
-    15: "MRB(2Y,50D,10%): The stock has a total of at least 4 past episodes and the sum of entry-to-TP percentage increase across all past episodes that eventually hit TP is greater than the sum of entry-to-low percentage decrease across all past episodes, including episodes that have not reached TP. Score 0 if no past episodes eventually hit TP.",
+    5:  "The stock's 50-day SMA is above its 200-day SMA.",
+    6:  "The stock's 50-day SMA is higher than it was 20 days ago.",
+    7:  "The stock's daily closes were above its 200-day SMA in at least 40 of the past 50 days.",
+    8:  "The stock's current price is in the middle 50% of its 200-day high-low range.",
+    9:  "The stock's current price is above its lowest daily close in the past 20 days.",
+    10: "The stock's current price is above the most recent swing low close in the past 50 days, where swing low close refers to a close lower than the two closes before it and the two closes after it.",
+    11: "The stock has 4 or less high-volume down days in the past 20 days, where high-volume refers to volume at least 20% above the 20-day average.",
+    12: "The stock's total down-day volume does not exceed its total up-day volume by more than 50% in the past 20 days.",
+    13: "The stock's Z-scores were greater than -1 in at least 10 of the past 20 days, where each day's Z-score is calculated using that day's close, trailing 20-day SMA, and trailing 20-day SD.",
+    14: "The stock closed in the bottom 25% of its daily high-low range in no more than 4 down days in the past 20 days.",
+    15: "MRB(2Y,50D,10%): The stock has a total of at least 8 past episodes.",
+    16: "MRB(2Y,50D,10%): The stock has a total of at least 4 past episodes and at least 70% overall success rate.",
+    17: "MRB(2Y,50D,10%): The stock has a total of at least 4 past episodes and across all past win episodes, the average entry-to-TP holding duration is 20 days or less. Score 0 if there are no past win episodes.",
+    18: "MRB(2Y,50D,10%): The stock has a total of at least 4 past episodes and across all past failed episodes, the average entry-to-TP holding duration, or to the latest available date if TP has not been reached, is 100 days or less. Score 1 if there are no past failed episodes.",
+    19: "MRB(2Y,50D,10%): The stock has a total of at least 4 past episodes and the maximum entry-to-low percentage decrease across all past episodes is no more than 30%.",
+    20: "MRB(2Y,50D,10%): The stock has a total of at least 4 past episodes and the sum of entry-to-TP percentage increase across all past episodes that eventually hit TP is at least 20% greater than the sum of entry-to-low percentage decrease across all past episodes, including episodes that have not reached TP. Score 0 if no past episodes eventually hit TP.",
 }
 
 
@@ -202,37 +207,71 @@ def evaluate_questions(stock, idx, mr_result=None, bt_success_thres=0.70):
     q[4] = is_finite(stock["sma200_now"]) and is_finite(stock["sma200_20ago"]) and stock["sma200_now"] > stock["sma200_20ago"]
 
     closes = stock["closes"]
+    highs  = stock["highs"]
+    lows   = stock["lows"]
     rows   = stock["rows"]
     price  = stock["price"]
     n      = len(closes)
 
-    # Q5: price above 50-day SMA
-    q[5] = is_finite(price) and is_finite(stock["sma50_now"]) and price > stock["sma50_now"]
+    # Q5: 50-day SMA above 200-day SMA
+    q[5] = is_finite(stock["sma50_now"]) and is_finite(stock["sma200_now"]) and stock["sma50_now"] > stock["sma200_now"]
 
-    # Q6: 50-day SMA above 200-day SMA
-    q[6] = is_finite(stock["sma50_now"]) and is_finite(stock["sma200_now"]) and stock["sma50_now"] > stock["sma200_now"]
+    # Q6: 50-day SMA higher than it was 20 days ago
+    sma50_20ago = sma(closes, 50, n - 20) if n - 20 >= 0 else float("nan")
+    q[6] = is_finite(stock["sma50_now"]) and is_finite(sma50_20ago) and stock["sma50_now"] > sma50_20ago
 
-    # Q7: price above lowest close in the past 20 days
-    if n >= 20:
-        last20 = [c for c in closes[-20:] if is_finite(c)]
-        low20  = min(last20) if last20 else float("nan")
-        q[7]   = is_finite(price) and is_finite(low20) and price > low20
+    # Q7: daily closes above 200-day SMA in at least 40 of the past 50 days
+    if n >= 250:
+        cnt = 0
+        for i in range(n - 50, n):
+            sma200_i = sma(closes, 200, i + 1)
+            if is_finite(closes[i]) and is_finite(sma200_i) and closes[i] > sma200_i:
+                cnt += 1
+        q[7] = cnt >= 40
     else:
         q[7] = False
 
-    # Q8: price above most recent confirmed swing-low close in the past 50 days
-    if n >= 50 + SWING_RIGHT_BARS:
-        swing_idxs    = find_swing_low_indices(closes, left=SWING_LEFT_BARS, right=SWING_RIGHT_BARS)
-        recent_swings = [i for i in swing_idxs if i >= n - 50]
-        if recent_swings:
-            swing_low_close = closes[max(recent_swings)]
-            q[8] = is_finite(price) and is_finite(swing_low_close) and price > swing_low_close
+    # Q8: current price in the middle 50% of its 200-day high-low range
+    if n >= 200:
+        window_highs = [h for h in highs[-200:] if is_finite(h)]
+        window_lows  = [l for l in lows[-200:]  if is_finite(l)]
+        if window_highs and window_lows:
+            hi200 = max(window_highs)
+            lo200 = min(window_lows)
+            rng   = hi200 - lo200
+            if is_finite(price) and rng > 0:
+                lower_bound = lo200 + 0.25 * rng
+                upper_bound = lo200 + 0.75 * rng
+                q[8] = lower_bound <= price <= upper_bound
+            else:
+                q[8] = False
         else:
             q[8] = False
     else:
         q[8] = False
 
-    # Q9: 5 or fewer high-volume down days in the past 20 days
+    # Q9: price above lowest close in the past 20 days
+    if n >= 20:
+        last20 = [c for c in closes[-20:] if is_finite(c)]
+        low20  = min(last20) if last20 else float("nan")
+        q[9]   = is_finite(price) and is_finite(low20) and price > low20
+    else:
+        q[9] = False
+
+    # Q10: price above most recent confirmed swing-low close in the past 50 days
+    if n >= 50 + SWING_RIGHT_BARS:
+        swing_idxs    = find_swing_low_indices(closes, left=SWING_LEFT_BARS, right=SWING_RIGHT_BARS)
+        recent_swings = [i for i in swing_idxs if i >= n - 50]
+        if recent_swings:
+            swing_low_close = closes[max(recent_swings)]
+            q[10] = is_finite(price) and is_finite(swing_low_close) and price > swing_low_close
+        else:
+            q[10] = False
+    else:
+        q[10] = False
+
+    # Q11: 4 or fewer high-volume down days in the past 20 days
+    #   high-volume = volume at least 20% above the 20-day average
     if n >= 21:
         idxs20    = range(n - 20, n)
         vols20    = [rows[i]["volume"] for i in idxs20 if is_finite(rows[i]["volume"])]
@@ -242,13 +281,13 @@ def evaluate_questions(stock, idx, mr_result=None, bt_success_thres=0.70):
             prev_c, cur_c, vol = rows[i - 1]["close"], rows[i]["close"], rows[i]["volume"]
             if not (is_finite(prev_c) and is_finite(cur_c) and is_finite(vol) and is_finite(avg_vol20)):
                 continue
-            if vol > avg_vol20 and cur_c < prev_c:
+            if vol >= avg_vol20 * 1.2 and cur_c < prev_c:
                 hv_down += 1
-        q[9] = hv_down <= 5
+        q[11] = hv_down <= 4
     else:
-        q[9] = False
+        q[11] = False
 
-    # Q10: down-day volume doesn't exceed up-day volume by more than 50% in the past 20 days
+    # Q12: down-day volume doesn't exceed up-day volume by more than 50% in the past 20 days
     if n >= 21:
         up_vol = down_vol = 0.0
         any_valid = False
@@ -261,11 +300,47 @@ def evaluate_questions(stock, idx, mr_result=None, bt_success_thres=0.70):
                 up_vol += vol
             elif cur_c < prev_c:
                 down_vol += vol
-        q[10] = any_valid and down_vol <= up_vol * 1.5
+        q[12] = any_valid and down_vol <= up_vol * 1.5
     else:
-        q[10] = False
+        q[12] = False
 
-    # Q11-Q15: MR backtest metrics (require a valid mr_result).
+    # Q13: Z-scores > -1 in at least 10 of the past 20 days
+    #   each day's Z uses that day's close vs. its own trailing 20-day SMA/SD
+    if n >= 40:
+        cnt = 0
+        for i in range(n - 20, n):
+            sma20_i = sma(closes, 20, i + 1)
+            sd20_i  = std_sample(closes[i + 1 - 20:i + 1])
+            if is_finite(closes[i]) and is_finite(sma20_i) and is_finite(sd20_i) and sd20_i != 0:
+                z_i = (closes[i] - sma20_i) / sd20_i
+                if z_i > -1:
+                    cnt += 1
+        q[13] = cnt >= 10
+    else:
+        q[13] = False
+
+    # Q14: closed in the bottom 25% of its daily high-low range in no more than 4 down days
+    #   in the past 20 days (down day = close < previous close)
+    if n >= 21:
+        bad = 0
+        for i in range(n - 20, n):
+            prev_c, cur_c = rows[i - 1]["close"], rows[i]["close"]
+            hi, lo = highs[i], lows[i]
+            if not (is_finite(prev_c) and is_finite(cur_c) and is_finite(hi) and is_finite(lo)):
+                continue
+            if cur_c >= prev_c:
+                continue
+            rng = hi - lo
+            if rng <= 0:
+                continue
+            pos = (cur_c - lo) / rng
+            if pos <= 0.25:
+                bad += 1
+        q[14] = bad <= 4
+    else:
+        q[14] = False
+
+    # Q15-Q20: MR backtest metrics (require a valid mr_result).
     # "Past episode" = closed episodes only (outcome win/fail); open episodes excluded.
     if mr_result is not None:
         episodes = mr_result["episodes"]
@@ -273,21 +348,21 @@ def evaluate_questions(stock, idx, mr_result=None, bt_success_thres=0.70):
         n_closed = len(closed)
         n_wins   = sum(1 for ep in closed if ep["outcome"] == "win")
 
-        # Q11: at least 8 past episodes
-        q[11] = n_closed >= 8
+        # Q15: at least 8 past episodes
+        q[15] = n_closed >= 8
 
-        # Q12: at least 4 past episodes AND win rate >= bt_success_thres
-        q[12] = n_closed >= 4 and (n_wins / n_closed) >= bt_success_thres
+        # Q16: at least 4 past episodes AND win rate >= bt_success_thres
+        q[16] = n_closed >= 4 and (n_wins / n_closed) >= bt_success_thres
 
-        # Q13: at least 4 past episodes AND average TP-hit duration <= 20 days (WIN episodes)
+        # Q17: at least 4 past episodes AND average TP-hit duration <= 20 days (WIN episodes)
         #   Score 0 if no win episodes exist
         tp_durs = [
             ep["tp_dur_td"] for ep in closed
             if ep["outcome"] == "win" and ep["tp_dur_td"] is not None
         ]
-        q[13] = n_closed >= 4 and bool(tp_durs) and (sum(tp_durs) / len(tp_durs)) <= 20
+        q[17] = n_closed >= 4 and bool(tp_durs) and (sum(tp_durs) / len(tp_durs)) <= 20
 
-        # Q14: at least 4 past episodes AND average FAIL duration <= 100 days
+        # Q18: at least 4 past episodes AND average FAIL duration <= 100 days
         #   duration = eventual_tp_dur_td if TP was eventually hit, else td_elapsed
         #   Score 1 if no fail episodes exist
         fail_durs = []
@@ -297,14 +372,13 @@ def evaluate_questions(stock, idx, mr_result=None, bt_success_thres=0.70):
             dur = ep["eventual_tp_dur_td"] if ep["eventual_tp_dur_td"] is not None else ep["td_elapsed"]
             if dur is not None:
                 fail_durs.append(dur)
-        q[14] = n_closed >= 4 and ((not fail_durs) or (sum(fail_durs) / len(fail_durs)) <= 100)
+        q[18] = n_closed >= 4 and ((not fail_durs) or (sum(fail_durs) / len(fail_durs)) <= 100)
 
-        # Q15: at least 4 past episodes AND sum(entry-to-TP % gain, TP-hit episodes only)
-        #   > sum(entry-to-low % decrease, all closed episodes). Score 0 if no episode
-        #   ever hit TP (win, or fail that eventually hit TP).
-        tp_gain_pct_sum = 0.0
+        # Q19-Q20: entry-to-low drawdown and entry-to-TP gain, per episode
+        tp_gain_pct_sum  = 0.0
         low_decr_pct_sum = 0.0
-        any_hit_tp = False
+        low_decr_pcts    = []
+        any_hit_tp       = False
         for ep in closed:
             entry_price = ep["entry_price"]
             if not (is_finite(entry_price) and entry_price != 0):
@@ -314,17 +388,26 @@ def evaluate_questions(stock, idx, mr_result=None, bt_success_thres=0.70):
                 any_hit_tp = True
                 tp_gain_pct_sum += 100.0 * (ep["tp_price"] - entry_price) / entry_price
             if is_finite(ep.get("min_low")):
-                low_decr_pct_sum += 100.0 * (entry_price - ep["min_low"]) / entry_price
-        q[15] = n_closed >= 4 and any_hit_tp and (tp_gain_pct_sum > low_decr_pct_sum)
+                decr_pct = 100.0 * (entry_price - ep["min_low"]) / entry_price
+                low_decr_pct_sum += decr_pct
+                low_decr_pcts.append(decr_pct)
+
+        # Q19: at least 4 past episodes AND max entry-to-low % decrease <= 30%
+        q[19] = n_closed >= 4 and bool(low_decr_pcts) and max(low_decr_pcts) <= 30
+
+        # Q20: at least 4 past episodes AND sum(entry-to-TP % gain, TP-hit episodes only)
+        #   is at least 20% greater than sum(entry-to-low % decrease, all closed episodes).
+        #   Score 0 if no episode ever hit TP (win, or fail that eventually hit TP).
+        q[20] = n_closed >= 4 and any_hit_tp and (tp_gain_pct_sum >= 1.2 * low_decr_pct_sum)
     else:
-        q[11] = q[12] = q[13] = q[14] = q[15] = False
+        q[15] = q[16] = q[17] = q[18] = q[19] = q[20] = False
 
     return q
 
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Scan SGX/US tickers (Yahoo) and score 15 technical yes/no questions per symbol."
+        description="Scan SGX/US tickers (Yahoo) and score 20 technical yes/no questions per symbol."
     )
     ap.add_argument(
         "--mode",
@@ -549,7 +632,7 @@ def main():
         finally:
             time.sleep(args.sleep)
 
-    qs        = list(range(1, 16))
+    qs        = list(range(1, 21))
     max_score = len(qs)
 
     filtered = [r for r in results if r["Score"] >= args.score_thres]

@@ -35,6 +35,10 @@ YF_CHART_URL  = (
     "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
     "?interval=1d&range={range}"
 )
+YF_CHART_URL_PERIOD = (
+    "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    "?interval=1d&period1={period1}&period2={period2}"
+)
 
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -183,9 +187,22 @@ def get_name_map(symbols: list[str]) -> dict:
 
 # ─── Chart fetch ──────────────────────────────────────────────────────────────
 
-def fetch_chart(symbol: str, window: str = "1y") -> dict:
-    """Fetch daily OHLCV + timestamps from Yahoo Finance for the given window."""
-    payload = http_get_json(YF_CHART_URL.format(symbol=symbol, range=window))
+def fetch_chart(symbol: str, window: str = "1y", period1: int | None = None) -> dict:
+    """Fetch daily OHLCV + timestamps from Yahoo Finance for the given window.
+
+    If `period1` (a Unix timestamp) is given, fetches interval=1d data from
+    period1 to now via explicit period1/period2 instead of `range={window}`.
+    This matters for long lookbacks: Yahoo's range=max (and other very long
+    ranges) silently downsamples to monthly bars, while an explicit
+    period1/period2 request keeps true daily granularity.
+    """
+    if period1 is not None:
+        period2 = int(time.time())
+        payload = http_get_json(
+            YF_CHART_URL_PERIOD.format(symbol=symbol, period1=period1, period2=period2)
+        )
+    else:
+        payload = http_get_json(YF_CHART_URL.format(symbol=symbol, range=window))
     result  = payload.get("chart", {}).get("result", []) or []
     if not result:
         raise ValueError("No chart result returned")
